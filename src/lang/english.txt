@@ -1527,6 +1527,9 @@ STR_CONFIG_SETTING_DISTRIBUTION_PAX                             :Distribution fo
 STR_CONFIG_SETTING_DISTRIBUTION_MAIL                            :Distribution for mail: {STRING2}
 STR_CONFIG_SETTING_DISTRIBUTION_ARMOURED                        :Distribution for the ARMOURED cargo class: {STRING2}
 STR_CONFIG_SETTING_DISTRIBUTION_DEFAULT                         :Distribution for other cargo classes: {STRING2}
+STR_CONFIG_SETTING_LINKGRAPH_ACCURACY                           :Distribution accuracy: {STRING2}
+STR_CONFIG_SETTING_DEMAND_DISTANCE                              :Effect of distance on demands: {STRING2}
+STR_CONFIG_SETTING_DEMAND_SIZE                                  :Effect of remote station's popularity on symmetric demands: {STRING2}
 
 STR_CONFIG_SETTING_GUI                                          :{ORANGE}Interface
 STR_CONFIG_SETTING_CONSTRUCTION                                 :{ORANGE}Construction
