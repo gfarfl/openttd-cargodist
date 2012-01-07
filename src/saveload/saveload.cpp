@@ -243,7 +243,7 @@
  *  177   24619
  *  178   24789
  */
-extern const uint16 SAVEGAME_VERSION = SL_CAPACITIES; ///< Current savegame version of OpenTTD.
+extern const uint16 SAVEGAME_VERSION = SL_COMPONENTS; ///< Current savegame version of OpenTTD.
 
 SavegameType _savegame_type; ///< type of savegame we are loading
 
@@ -422,6 +422,7 @@ extern const ChunkHandler _group_chunk_handlers[];
 extern const ChunkHandler _cargopacket_chunk_handlers[];
 extern const ChunkHandler _autoreplace_chunk_handlers[];
 extern const ChunkHandler _labelmaps_chunk_handlers[];
+extern const ChunkHandler _linkgraph_chunk_handlers[];
 extern const ChunkHandler _airport_chunk_handlers[];
 extern const ChunkHandler _object_chunk_handlers[];
 extern const ChunkHandler _persistent_storage_chunk_handlers[];
@@ -456,6 +457,7 @@ static const ChunkHandler * const _chunk_handlers[] = {
 	_cargopacket_chunk_handlers,
 	_autoreplace_chunk_handlers,
 	_labelmaps_chunk_handlers,
+	_linkgraph_chunk_handlers,
 	_airport_chunk_handlers,
 	_object_chunk_handlers,
 	_persistent_storage_chunk_handlers,
