@@ -1528,6 +1528,7 @@ STR_CONFIG_SETTING_DISTRIBUTION_DEFAULT                         :Distribution fo
 STR_CONFIG_SETTING_LINKGRAPH_ACCURACY                           :Distribution accuracy: {STRING2}
 STR_CONFIG_SETTING_DEMAND_DISTANCE                              :Effect of distance on demands: {STRING2}
 STR_CONFIG_SETTING_DEMAND_SIZE                                  :Effect of remote station's popularity on symmetric demands: {STRING2}
+STR_CONFIG_SETTING_SHORT_PATH_SATURATION                        :Saturation of short paths before using capacious paths: {STRING2}
 
 STR_CONFIG_SETTING_GUI                                          :{ORANGE}Interface
 STR_CONFIG_SETTING_CONSTRUCTION                                 :{ORANGE}Construction
