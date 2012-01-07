@@ -1602,6 +1602,9 @@ static void LoadUnloadVehicle(Vehicle *front, int *cargo_left)
 			} else if (cargo_not_full != 0) {
 				finished_loading = false;
 			}
+
+			/* Refresh next hop stats if we're full loading to avoid deadlocks. */
+			if (!finished_loading) front->RefreshNextHopsStats();
 		}
 		unloading_time = 20;
 
