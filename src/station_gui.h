@@ -13,8 +13,11 @@
 #define STATION_GUI_H
 
 #include "command_type.h"
+#include "station_type.h"
 #include "tilearea_type.h"
 #include "window_type.h"
+#include "cargo_type.h"
+#include <set>
 
 
 /** Types of cargo to display for station coverage. */
