@@ -1446,19 +1446,19 @@ static uint32 LoadUnloadVehicle(Vehicle *front, uint32 cargos_reserved)
 			}
 
 			if (new_cid == CT_AUTO_REFIT) {
-				/* Get refittable cargo type with the most waiting cargo. */
-				int amount = 0;
+				/* Get a refittable cargo type with waiting cargo for next_station or INVALID_STATION. */
 				CargoID cid;
 				FOR_EACH_SET_CARGO_ID(cid, refit_mask) {
-					/* Consider refitting to this cargo, if other vehicles of the consist cannot
-					 * already take the cargo without refitting */
-					if ((int)st->goods[cid].cargo.Count() > (int)consist_capleft[cid] + amount) {
+					if (st->goods[cid].cargo.HasCargoFor(next_station) ||
+							st->goods[cid].cargo.HasCargoFor(INVALID_STATION)) {
 						/* Try to find out if auto-refitting would succeed. In case the refit is allowed,
 						 * the returned refit capacity will be greater than zero. */
 						new_subtype = GetBestFittingSubType(v, v, cid);
 						DoCommand(v_start->tile, v_start->index, cid | 1U << 6 | new_subtype << 8 | 1U << 16, DC_QUERY_COST, GetCmdRefitVeh(v_start)); // Auto-refit and only this vehicle including artic parts.
-						if (_returned_refit_capacity > 0) {
-							amount = st->goods[cid].cargo.Count() - consist_capleft[cid];
+						/* Try to balance different loadable cargoes between parts of the consist, so that
+						 * all of them can be loaded. Avoid a situation where all vehicles suddenly switch
+						 * to the first loadable cargo for which there is only one packet. */
+						if (_returned_refit_capacity > 0 && consist_capleft[cid] < consist_capleft[new_cid]) {
 							new_cid = cid;
 						}
 					}
