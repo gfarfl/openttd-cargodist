@@ -1448,19 +1448,25 @@ static uint32 LoadUnloadVehicle(Vehicle *front, uint32 cargos_reserved)
 				}
 			}
 
+			bool do_reserve = false;
 			/* Refit if given a valid cargo. */
 			if (new_cid < NUM_CARGO) {
 				CommandCost cost = DoCommand(v_start->tile, v_start->index, new_cid | 1U << 6 | new_subtype << 8 | 1U << 16, DC_EXEC, GetCmdRefitVeh(v_start)); // Auto-refit and only this vehicle including artic parts.
 				if (cost.Succeeded()) front->profit_this_year -= cost.GetCost() << 8;
 				ge = &st->goods[v->cargo_type];
+				do_reserve = _settings_game.order.improved_load && (front->current_order.GetLoadType() & OLFB_FULL_LOAD);
 			}
 
-			/* Add new capacity to consist capacity */
-			consist_capleft[v_start->cargo_type] += v_start->cargo_cap;
-			for (Vehicle *w = v_start; w->HasArticulatedPart(); ) {
-				w = w->GetNextArticulatedPart();
+			/* Add new capacity to consist capacity and reserve cargo */
+			w = v_start;
+			do {
 				consist_capleft[w->cargo_type] += w->cargo_cap;
-			}
+				if (do_reserve) {
+					st->goods[w->cargo_type].cargo.MoveTo(&w->cargo, w->cargo_cap, StationCargoList::MTA_RESERVE, NULL, st->xy);
+					SetBit(cargos_reserved, w->cargo_type);
+				}
+				w = w->HasArticulatedPart() ? w->GetNextArticulatedPart() : NULL;
+			} while (w != NULL);
 
 			cur_company.Restore();
 		}
