@@ -410,6 +410,16 @@ public:
 
 	void RerouteStalePackets(StationID to);
 
+	/**
+	 * Check for cargo headed for a specific station.
+	 * @param next Station the cargo is headed for.
+	 * @return If there is any cargo for that station.
+	 */
+	inline bool HasCargoFor(StationID next) const
+	{
+		return this->packets.find(next) != this->packets.end();
+	}
+
 	void RandomTruncate(uint max_remaining);
 
 	/**
