@@ -42,6 +42,7 @@
 #include "economy_base.h"
 #include "core/pool_func.hpp"
 #include "core/backup_type.hpp"
+#include "cargo_type.h"
 #include "water.h"
 #include "game/game.hpp"
 #include "cargomonitor.h"
@@ -1194,17 +1195,21 @@ Money CargoPayment::PayTransfer(const CargoPacket *cp, uint count)
 
 /**
  * Prepare the vehicle to be unloaded.
+ * @param curr_station the station where the consist is at the moment
  * @param front_v the vehicle to be unloaded
  */
 void PrepareUnload(Vehicle *front_v)
 {
+	Station *curr_station = Station::Get(front_v->last_station_visited);
+	curr_station->loading_vehicles.push_back(front_v);
+
 	/* At this moment loading cannot be finished */
 	ClrBit(front_v->vehicle_flags, VF_LOADING_FINISHED);
 
-	/* Start unloading in at the first possible moment */
+	/* Start unloading at the first possible moment */
 	front_v->load_unload_ticks = 1;
 
-	if ((front_v->current_order.GetUnloadType() & OUFB_NO_UNLOAD) == 0) {
+	if (front_v->orders.list == NULL || (front_v->current_order.GetUnloadType() & OUFB_NO_UNLOAD) == 0) {
 		for (Vehicle *v = front_v; v != NULL; v = v->Next()) {
 			if (v->cargo_cap > 0 && !v->cargo.Empty()) {
 				SetBit(v->vehicle_flags, VF_CARGO_UNLOADING);
@@ -1222,20 +1227,48 @@ void PrepareUnload(Vehicle *front_v)
 
 /**
  * Reserves cargo if the full load order and improved_load is set.
- * @param st The station where the consist is loading at the moment
- * @param u The front of the loading vehicle consist
- * @return bit field for the cargo classes with bits for the reserved cargos set (if anything was reserved).
+ * @param st The station where the consist is loading at the moment.
+ * @param u The front of the loading vehicle consist.
+ * @param next_station Station the vehicle will stop at next.
+ * @return Bit field for the cargo classes with bits for the reserved cargos set (if anything was reserved).
  */
-uint32 ReserveConsist(Station *st, Vehicle *u)
+uint32 ReserveConsist(Station *st, Vehicle *u, StationID next_station)
 {
 	uint32 ret = 0;
 	if (_settings_game.order.improved_load && (u->current_order.GetLoadType() & OLFB_FULL_LOAD)) {
 		/* Update reserved cargo */
 		for (Vehicle *v = u; v != NULL; v = v->Next()) {
+			/* Only reserve if the vehicle is not unloading anymore.
+			 *
+			 * The packets that are kept in the vehicle because they have the
+			 * same destination as the vehicle are stored in the reservation
+			 * list while unloading for performance reasons. The reservation
+			 * list is swapped with the onboard list after unloading. This
+			 * doesn't increase the load/unload time. So if we start reserving
+			 * cargo before unloading has stopped we'll load that cargo for free
+			 * later. Like this there is a slightly increased probability that
+			 * another vehicle which has arrived later loads cargo that should
+			 * be loaded by this vehicle but as the algorithm isn't perfect in
+			 * that regard anyway we can tolerate it.
+			 *
+			 * The algorithm isn't perfect as it only counts free capacity for
+			 * reservation. If another vehicle arrives later but unloads faster
+			 * than this one, this vehicle won't reserve all the cargo it may
+			 * be able to take after fully unloading. So the other vehicle may
+			 * load it even if it has arrived later.
+			 */
+			if (HasBit(v->vehicle_flags, VF_CARGO_UNLOADING)) continue;
+
 			int cap = v->cargo_cap - v->cargo.Count();
 			if (cap > 0) {
-				st->goods[v->cargo_type].cargo.MoveTo(&v->cargo, cap, StationCargoList::MTA_RESERVE, NULL, st->xy);
-				SetBit(ret, v->cargo_type);
+				/* We could count the cargo in one round and then assign the
+				 * quantities in another round over all vehicles. This would
+				 * lead to an equal distribution of cargo over all vehicles
+				 * in the consist. I don't think it's worth it, though.
+				 */
+				if (st->goods[v->cargo_type].cargo.MoveTo(&v->cargo, cap, next_station, true) > 0) {
+					SetBit(ret, v->cargo_type);
+				}
 			}
 		}
 	}
@@ -1271,10 +1304,13 @@ static uint32 LoadUnloadVehicle(Vehicle *front, uint32 cargos_reserved)
 	StationID last_visited = front->last_station_visited;
 	Station *st = Station::Get(last_visited);
 
-	cargos_reserved |= ReserveConsist(st, front);
+	StationID next_station = front->GetNextStoppingStation();
+	cargos_reserved |= ReserveConsist(st, front, next_station);
 
 	/* We have not waited enough time till the next round of loading/unloading */
 	if (front->load_unload_ticks != 0) return cargos_reserved;
+
+	OrderUnloadFlags unload_flags = front->current_order.GetUnloadType();
 
 	if (front->type == VEH_TRAIN && (!IsTileType(front->tile, MP_STATION) || GetStationIndex(front->tile) != st->index)) {
 		/* The train reversed in the station. Take the "easy" way
@@ -1342,59 +1378,40 @@ static uint32 LoadUnloadVehicle(Vehicle *front, uint32 cargos_reserved)
 
 		GoodsEntry *ge = &st->goods[v->cargo_type];
 
-		if (HasBit(v->vehicle_flags, VF_CARGO_UNLOADING) && (front->current_order.GetUnloadType() & OUFB_NO_UNLOAD) == 0) {
+		if (HasBit(v->vehicle_flags, VF_CARGO_UNLOADING)) {
 			uint cargo_count = v->cargo.OnboardCount();
 			uint amount_unloaded = _settings_game.order.gradual_loading ? min(cargo_count, load_amount) : cargo_count;
-			bool remaining = false; // Are there cargo entities in this vehicle that can still be unloaded here?
-			bool accepted  = false; // Is the cargo accepted by the station?
 
+			uint prev_count = ge->cargo.Count();
 			payment->SetCargo(v->cargo_type);
+			uint delivered = ge->cargo.TakeFrom(&v->cargo, amount_unloaded, unload_flags,
+					next_station, front->last_loading_station == last_visited, payment);
 
-			if (HasBit(ge->acceptance_pickup, GoodsEntry::GES_ACCEPTANCE) && !(front->current_order.GetUnloadType() & OUFB_TRANSFER)) {
-				/* The cargo has reached its final destination, the packets may now be destroyed */
-				remaining = v->cargo.MoveTo<StationCargoList>(NULL, amount_unloaded, VehicleCargoList::MTA_FINAL_DELIVERY, payment, last_visited);
+			st->time_since_unload = 0;
+			unloading_time += delivered;
 
-				dirty_vehicle = true;
-				accepted = true;
-			}
-
-			/* The !accepted || v->cargo.Count == cargo_count clause is there
-			 * to make it possible to force unload vehicles at the station where
-			 * they were loaded, but to not force unload the vehicle when the
-			 * station is still accepting the cargo in the vehicle. It doesn't
-			 * accept cargo that was loaded at the same station. */
-			if ((front->current_order.GetUnloadType() & (OUFB_UNLOAD | OUFB_TRANSFER)) && (!accepted || v->cargo.OnboardCount() == cargo_count)) {
-				remaining = v->cargo.MoveTo(&ge->cargo, amount_unloaded, front->current_order.GetUnloadType() & OUFB_TRANSFER ? VehicleCargoList::MTA_TRANSFER : VehicleCargoList::MTA_UNLOAD, payment);
+			if (ge->cargo.Count() > prev_count) {
+				/* something has been transferred. The station windows need updating. */
+				dirty_station = true;
 				if (!HasBit(ge->acceptance_pickup, GoodsEntry::GES_PICKUP)) {
 					SetBit(ge->acceptance_pickup, GoodsEntry::GES_PICKUP);
 					InvalidateWindowData(WC_STATION_LIST, last_visited);
 				}
-
-				dirty_vehicle = dirty_station = true;
-			} else if (!accepted) {
-				/* The order changed while unloading (unset unload/transfer) or the
-				 * station does not accept our goods. */
-				ClrBit(v->vehicle_flags, VF_CARGO_UNLOADING);
-
-				/* Say we loaded something, otherwise we'll think we didn't unload
-				 * something and we didn't load something, so we must be finished
-				 * at this station. Setting the unloaded means that we will get a
-				 * retry for loading in the next cycle. */
-				anything_unloaded = true;
-				continue;
 			}
 
-			/* Deliver goods to the station */
-			st->time_since_unload = 0;
-
-			unloading_time += amount_unloaded;
-
 			anything_unloaded = true;
-			if (_settings_game.order.gradual_loading && remaining) {
-				completely_emptied = false;
-			} else {
-				/* We have finished unloading (cargo count == 0) */
+			dirty_vehicle = true;
+
+			/* load_amount might (theoretically) be 0, which would make delivered == 0 even though there is still cargo
+			 * in the vehicle. Thus OnboardCount > 0. In that case we can't stop unloading as SwapReserved wouldn't work.
+			 * v->cargo also contains the cargo reserved for the vehicle which is not on board at the moment, but will be
+			 * swapped back when done unloading.
+			 */
+			if (v->cargo.OnboardCount() == 0) {
+				/* done delivering */
+				if (!v->cargo.Empty()) completely_emptied = false;
 				ClrBit(v->vehicle_flags, VF_CARGO_UNLOADING);
+				v->cargo.SwapReserved();
 			}
 
 			continue;
@@ -1461,8 +1478,7 @@ static uint32 LoadUnloadVehicle(Vehicle *front, uint32 cargos_reserved)
 			w = v_start;
 			do {
 				consist_capleft[w->cargo_type] += w->cargo_cap;
-				if (do_reserve) {
-					st->goods[w->cargo_type].cargo.MoveTo(&w->cargo, w->cargo_cap, StationCargoList::MTA_RESERVE, NULL, st->xy);
+				if (do_reserve && st->goods[w->cargo_type].cargo.MoveTo(&w->cargo, w->cargo_cap, next_station, true) > 0) {
 					SetBit(cargos_reserved, w->cargo_type);
 				}
 				w = w->HasArticulatedPart() ? w->GetNextArticulatedPart() : NULL;
@@ -1502,19 +1518,16 @@ static uint32 LoadUnloadVehicle(Vehicle *front, uint32 cargos_reserved)
 			if (_settings_game.order.gradual_loading) cap_left = min(cap_left, load_amount);
 			if (v->cargo.Empty()) TriggerVehicle(v, VEHICLE_TRIGGER_NEW_CARGO);
 
-			uint reserved_count = v->cargo.ReservedCount();
-			uint station_count = ge->cargo.Count();
-
-			if (reserved_count > 0) {
-				v->cargo.LoadReserved(cap_left);
+			int loaded = 0;
+			if (v->cargo.ReservedCount() > 0) {
+				loaded = v->cargo.LoadReserved(cap_left);
 			} else {
-				ge->cargo.MoveTo(&v->cargo, cap_left, StationCargoList::MTA_CARGO_LOAD, NULL, st->xy);
-				consist_capleft[v->cargo_type] -= cap_left;
+				loaded = ge->cargo.MoveTo(&v->cargo, cap_left, next_station);
+				consist_capleft[v->cargo_type] -= loaded;
 			}
-			uint loaded = reserved_count + station_count - v->cargo.ReservedCount() - ge->cargo.Count();
 
 			/* Store whether the maximum possible load amount was loaded or not.*/
-			if (loaded == (uint)cap_left) {
+			if (loaded == cap_left) {
 				SetBit(full_load_amount, v->cargo_type);
 			} else {
 				ClrBit(full_load_amount, v->cargo_type);
