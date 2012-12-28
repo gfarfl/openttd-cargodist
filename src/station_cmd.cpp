@@ -3428,7 +3428,14 @@ void IncreaseStats(Station *st, const Vehicle *front, StationID next_station_id)
 {
 	for (const Vehicle *v = front; v != NULL; v = v->Next()) {
 		if (v->refit_cap > 0) {
-			IncreaseStats(st, v->cargo_type, next_station_id, v->refit_cap, v->cargo.Count());
+			/* The cargo count can indeed be higher than the refit_cap if
+			 * wagons have been auto-replaced and subsequently auto-
+			 * refitted to a higher capacity. The cargo gets redistributed
+			 * among the wagons in that case.
+			 * As usage is not such an important figure anyway we just
+			 * ignore the additional cargo then.*/
+			IncreaseStats(st, v->cargo_type, next_station_id, v->refit_cap,
+				min(v->refit_cap, v->cargo.Count()));
 		}
 	}
 }
