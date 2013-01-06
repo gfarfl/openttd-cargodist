@@ -29,6 +29,7 @@ typedef Pool<CargoPacket, CargoPacketID, 1024, 0xFFF000, PT_NORMAL, true, false>
 extern CargoPacketPool _cargopacket_pool;
 
 template <class Tinst> class CargoList;
+class StationCargoList; // forward-declare, so we can use it in VehicleCargoList::Unreserve
 extern const struct SaveLoad *GetCargoPacketDesc();
 
 /**
@@ -170,6 +171,8 @@ public:
 	typedef std::list<CargoPacket *> List;
 	/** The iterator for our container. */
 	typedef List::iterator Iterator;
+	/** The reverse iterator for our container. */
+	typedef List::reverse_iterator ReverseIterator;
 	/** The const iterator for our container. */
 	typedef List::const_iterator ConstIterator;
 
@@ -177,12 +180,14 @@ public:
 	enum MoveToAction {
 		MTA_FINAL_DELIVERY, ///< "Deliver" the packet to the final destination, i.e. destroy the packet.
 		MTA_CARGO_LOAD,     ///< Load the packet onto a vehicle, i.e. set the last loaded station ID.
+		MTA_RESERVE,        ///< Reserve cargo for later loading.
 		MTA_TRANSFER,       ///< The cargo is moved as part of a transfer.
 		MTA_UNLOAD,         ///< The cargo is moved as part of a forced unload.
 	};
 
 protected:
 	uint count;                 ///< Cache for the number of cargo entities.
+	uint reserved_count;        ///< Amount of cargo being reserved for loading.
 	uint cargo_days_in_transit; ///< Cache for the sum of number of days in transit of each entity; comparable to man-hours.
 
 	List packets;               ///< The cargo packets in this list.
@@ -227,6 +232,15 @@ public:
 	}
 
 	/**
+	 * Returns sum of cargo reserved for the vehicle.
+	 * @return Cargo reserved for the vehicle.
+	 */
+	inline uint ReservedCount() const
+	{
+		return this->reserved_count;
+	}
+
+	/**
 	 * Returns source of the first cargo packet in this list.
 	 * @return The before mentioned source.
 	 */
@@ -245,7 +259,7 @@ public:
 	}
 
 
-	void Append(CargoPacket *cp);
+	void Append(CargoPacket *cp, bool update_cache = true);
 	void Truncate(uint max_remaining);
 
 	template <class Tother_inst>
@@ -262,7 +276,7 @@ protected:
 	/** The (direct) parent of this class. */
 	typedef CargoList<VehicleCargoList> Parent;
 
-	Money feeder_share; ///< Cache for the feeder share.
+	Money feeder_share;  ///< Cache for the feeder share.
 
 	void AddToCache(const CargoPacket *cp);
 	void RemoveFromCache(const CargoPacket *cp);
@@ -281,6 +295,38 @@ public:
 	{
 		return this->feeder_share;
 	}
+
+	/**
+	 * Returns sum of cargo on board the vehicle (ie not only
+	 * reserved).
+	 * @return Cargo on board the vehicle.
+	 */
+	inline uint OnboardCount() const
+	{
+		return this->count - this->reserved_count;
+	}
+
+	/**
+	 * Returns source of the first cargo packet in this list.
+	 * If the regular packets list is empty but there are packets
+	 * in the reservation list it returns the source of the first
+	 * reserved packet.
+	 * @return The before mentioned source.
+	 */
+	inline StationID Source() const
+	{
+		if (this->Empty()) {
+			return INVALID_STATION;
+		} else {
+			return this->packets.front()->source;
+		}
+	}
+
+	void Reserve(CargoPacket *cp);
+
+	void Unreserve(StationCargoList *dest);
+
+	void LoadReserved(StationCargoList *from, uint count);
 
 	void AgeCargo();
 
@@ -326,6 +372,46 @@ public:
 				cp1->days_in_transit == cp2->days_in_transit &&
 				cp1->source_type     == cp2->source_type &&
 				cp1->source_id       == cp2->source_id;
+	}
+
+	/**
+	 * Returns source of the first cargo packet in this list.
+	 * @return The before mentioned source.
+	 */
+	inline StationID Source() const
+	{
+		return this->Empty() ? INVALID_STATION : this->packets.front()->source;
+	}
+
+	/**
+	 * Returns total count of cargo, including reserved cargo that's not
+	 * actually in the list.
+	 * @return Total cargo count.
+	 */
+	inline uint TotalCount() const
+	{
+		return this->count + this->reserved_count;
+	}
+
+	/**
+	 * Return a previously  reserved packet to the station it came from.
+	 * @param cp Packet being returned.
+	 */
+	inline void Unreserve(CargoPacket *cp)
+	{
+		assert(cp->count <= this->reserved_count);
+		this->reserved_count -= cp->count;
+		this->Append(cp);
+	}
+
+	/**
+	 * Load some reserved cargo onto the vehicle which had reserved it.
+	 * @param move Amount of cargo being loaded.
+	 */
+	inline void LoadReserved(uint move)
+	{
+		assert(move <= this->reserved_count);
+		this->reserved_count -= move;
 	}
 };
 

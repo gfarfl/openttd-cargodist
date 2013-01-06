@@ -186,14 +186,15 @@ void CargoList<Tinst>::AddToCache(const CargoPacket *cp)
  * @warning After appending this packet may not exist anymore!
  * @note Do not use the cargo packet anymore after it has been appended to this CargoList!
  * @param cp Cargo packet to add.
+ * @param update_cache If false, the cache is not updated; used when loading from
+ *        the reservation list.
  * @pre cp != NULL
  */
 template <class Tinst>
-void CargoList<Tinst>::Append(CargoPacket *cp)
+void CargoList<Tinst>::Append(CargoPacket *cp, bool update_cache)
 {
 	assert(cp != NULL);
-	static_cast<Tinst *>(this)->AddToCache(cp);
-
+	if (update_cache) static_cast<Tinst *>(this)->AddToCache(cp);
 	for (List::reverse_iterator it(this->packets.rbegin()); it != this->packets.rend(); it++) {
 		CargoPacket *icp = *it;
 		if (Tinst::AreMergable(icp, cp) && icp->count + cp->count <= CargoPacket::MAX_COUNT) {
@@ -239,6 +240,53 @@ void CargoList<Tinst>::Truncate(uint max_remaining)
 }
 
 /**
+ * Reserves a packet for later loading and adds it to the cache.
+ * @param cp Packet to be reserved.
+ */
+void VehicleCargoList::Reserve(CargoPacket *cp)
+{
+	assert(cp != NULL);
+	this->Append(cp);
+	this->reserved_count += cp->count;
+}
+
+/**
+ * Returns all reserved cargo to the station and removes it from the cache.
+ * @param dest Station the cargo is returned to.
+ */
+void VehicleCargoList::Unreserve(StationCargoList *dest)
+{
+	ReverseIterator it = this->packets.rbegin();
+	while (this->reserved_count > 0) {
+		assert(it != this->packets.rend());
+		CargoPacket *cp = *it;
+		if (cp->count <= this->reserved_count) {
+			this->RemoveFromCache(cp);
+			this->reserved_count -= cp->count;
+			dest->Unreserve(cp);
+			this->packets.erase((++it).base());
+		} else {
+			cp->count -= this->reserved_count;
+			CargoPacket *cp_new = new CargoPacket(this->reserved_count, cp->days_in_transit, cp->source, cp->source_xy, cp->loaded_at_xy, 0, cp->source_type, cp->source_id);
+			dest->Unreserve(cp_new);
+			this->reserved_count = 0;
+		}
+	}
+}
+
+/**
+ * Load packets from the reservation list.
+ * @param from Station cargo list from where the cargo ist loaded.
+ * @param count Number of cargo to load.
+ */
+void VehicleCargoList::LoadReserved(StationCargoList *from, uint max_move)
+{
+	uint move = min(this->reserved_count, max_move);
+	this->reserved_count -= move;
+	from->LoadReserved(move);
+}
+
+/**
  * Moves the given amount of cargo to another list.
  * Depending on the value of mta the side effects of this function differ:
  *  - MTA_FINAL_DELIVERY: Destroys the packets that do not originate from a specific station.
@@ -264,7 +312,7 @@ template <class Tother_inst>
 bool CargoList<Tinst>::MoveTo(Tother_inst *dest, uint max_move, MoveToAction mta, CargoPayment *payment, uint data)
 {
 	assert(mta == MTA_FINAL_DELIVERY || dest != NULL);
-	assert(mta == MTA_UNLOAD || mta == MTA_CARGO_LOAD || payment != NULL);
+	assert(mta == MTA_UNLOAD || mta == MTA_CARGO_LOAD || mta == MTA_RESERVE || payment != NULL);
 
 	Iterator it(this->packets.begin());
 	while (it != this->packets.end() && max_move > 0) {
@@ -285,6 +333,20 @@ bool CargoList<Tinst>::MoveTo(Tother_inst *dest, uint max_move, MoveToAction mta
 					payment->PayFinalDelivery(cp, cp->count);
 					delete cp;
 					continue; // of the loop
+
+				case MTA_RESERVE:
+					cp->loaded_at_xy = data;
+					this->reserved_count += cp->count;
+					/* this reinterpret cast is nasty. The method should be
+					 * refactored to get rid of it. However, as this is only
+					 * a step on the way to cargodist and the whole method is
+					 * rearranged in a later step we can tolerate it to make the
+					 * patches smaller.
+					 * MTA_RESERVE can only happen if dest is a vehicle, so we
+					 * cannot crash here. I don't know a way to assert that,
+					 * though. */
+					reinterpret_cast<VehicleCargoList *>(dest)->Reserve(cp);
+					continue;
 
 				case MTA_CARGO_LOAD:
 					cp->loaded_at_xy = data;
@@ -331,7 +393,13 @@ bool CargoList<Tinst>::MoveTo(Tother_inst *dest, uint max_move, MoveToAction mta
 				cp_new->loaded_at_xy = data;
 			}
 
-			dest->Append(cp_new);
+			if (mta == MTA_RESERVE) {
+				this->reserved_count += cp_new->count;
+				/* nasty reinterpret cast, see above */
+				reinterpret_cast<VehicleCargoList *>(dest)->Reserve(cp_new);
+			} else {
+				dest->Append(cp_new);
+			}
 		}
 
 		max_move = 0;
