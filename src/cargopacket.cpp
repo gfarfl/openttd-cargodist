@@ -12,6 +12,7 @@
 #include "stdafx.h"
 #include "core/pool_func.hpp"
 #include "economy_base.h"
+#include "order_type.h"
 
 /* Initialize the cargopacket-pool */
 CargoPacketPool _cargopacket_pool("CargoPacket");
@@ -79,7 +80,7 @@ CargoPacket::CargoPacket(uint16 count, byte days_in_transit, StationID source, T
 
 /**
  * Split this packet in two and return the split off part.
- * @param new_size Size of the remaining part.
+ * @param new_size Size of the split part.
  * @return Split off part, or NULL if no packet could be allocated!
  */
 inline CargoPacket *CargoPacket::Split(uint new_size)
@@ -91,6 +92,16 @@ inline CargoPacket *CargoPacket::Split(uint new_size)
 	this->feeder_share -= fs;
 	this->count -= new_size;
 	return cp_new;
+}
+
+/**
+ * Reduce the packet by the given amount and remove the feeder share.
+ * @param count Amount to be removed.
+ */
+inline void CargoPacket::Reduce(uint count)
+{
+	this->feeder_share = 0;
+	this->count -= count;
 }
 
 /**
@@ -157,15 +168,17 @@ void CargoList<Tinst>::OnCleanPool()
 }
 
 /**
- * Update the cached values to reflect the removal of this packet.
+ * Update the cached values to reflect the removal of this packet or part of it.
  * Decreases count and days_in_transit.
  * @param cp Packet to be removed from cache.
+ * @param count Amount of cargo from the given packet to be removed.
  */
 template <class Tinst>
-void CargoList<Tinst>::RemoveFromCache(const CargoPacket *cp)
+void CargoList<Tinst>::RemoveFromCache(const CargoPacket *cp, uint count)
 {
-	this->count                 -= cp->count;
-	this->cargo_days_in_transit -= cp->days_in_transit * cp->count;
+	assert(count <= cp->count);
+	this->count                 -= count;
+	this->cargo_days_in_transit -= cp->days_in_transit * count;
 }
 
 /**
@@ -196,10 +209,7 @@ void CargoList<Tinst>::Append(CargoPacket *cp)
 
 	for (List::reverse_iterator it(this->packets.rbegin()); it != this->packets.rend(); it++) {
 		CargoPacket *icp = *it;
-		if (Tinst::AreMergable(icp, cp) && icp->count + cp->count <= CargoPacket::MAX_COUNT) {
-			icp->Merge(cp);
-			return;
-		}
+		if (CargoList<Tinst>::TryMerge(icp, cp)) return;
 	}
 
 	/* The packet could not be merged with another one */
@@ -219,7 +229,7 @@ void CargoList<Tinst>::Truncate(uint max_remaining)
 		if (max_remaining == 0) {
 			/* Nothing should remain, just remove the packets. */
 			it = this->packets.erase(it);
-			static_cast<Tinst *>(this)->RemoveFromCache(cp);
+			static_cast<Tinst *>(this)->RemoveFromCache(cp, cp->count);
 			delete cp;
 			continue;
 		}
@@ -239,105 +249,191 @@ void CargoList<Tinst>::Truncate(uint max_remaining)
 }
 
 /**
- * Moves the given amount of cargo to another list.
- * Depending on the value of mta the side effects of this function differ:
- *  - MTA_FINAL_DELIVERY: Destroys the packets that do not originate from a specific station.
- *  - MTA_CARGO_LOAD:     Sets the loaded_at_xy value of the moved packets.
- *  - MTA_TRANSFER:       Just move without side effects.
- *  - MTA_UNLOAD:         Just move without side effects.
- * @param dest  Destination to move the cargo to.
- * @param max_move Amount of cargo entities to move.
- * @param mta   How to handle the moving (side effects).
- * @param data  Depending on mta the data of this variable differs:
- *              - MTA_FINAL_DELIVERY - Station ID of packet's origin not to remove.
- *              - MTA_CARGO_LOAD     - Station's tile index of load.
- *              - MTA_TRANSFER       - Unused.
- *              - MTA_UNLOAD         - Unused.
- * @param payment The payment helper.
- *
- * @pre mta == MTA_FINAL_DELIVERY || dest != NULL
- * @pre mta == MTA_UNLOAD || mta == MTA_CARGO_LOAD || payment != NULL
- * @return True if there are still packets that might be moved from this cargo list.
+ * Tries to merge the second packet into the first and return if that was
+ * successful.
+ * @param icp Packet to be merged into.
+ * @param cp Packet to be eliminated.
+ * @return If the packets could be merged.
  */
 template <class Tinst>
-template <class Tother_inst>
-bool CargoList<Tinst>::MoveTo(Tother_inst *dest, uint max_move, MoveToAction mta, CargoPayment *payment, uint data)
+/* static */ bool CargoList<Tinst>::TryMerge(CargoPacket *icp, CargoPacket *cp)
 {
-	assert(mta == MTA_FINAL_DELIVERY || dest != NULL);
-	assert(mta == MTA_UNLOAD || mta == MTA_CARGO_LOAD || payment != NULL);
+	if (Tinst::AreMergable(icp, cp) &&
+			icp->count + cp->count <= CargoPacket::MAX_COUNT) {
+		icp->Merge(cp);
+		return true;
+	} else {
+		return false;
+	}
+}
 
-	Iterator it(this->packets.begin());
-	while (it != this->packets.end() && max_move > 0) {
-		CargoPacket *cp = *it;
-		if (cp->source == data && mta == MTA_FINAL_DELIVERY) {
-			/* Skip cargo that originated from this station. */
-			++it;
-			continue;
-		}
+/**
+ * Appends the given cargo packet. Tries to merge it with another one in the
+ * packets list. If no fitting packet is found, appends it. You can only append
+ * packets to the ranges of packets designated for keeping or loading.
+ * Furthermore if there are already packets reserved for loading you cannot
+ * directly add packets to the "keep" list. You first have to load the reserved
+ * ones.
+ * @warning After appending this packet may not exist anymore!
+ * @note Do not use the cargo packet anymore after it has been appended to this CargoList!
+ * @param cp Cargo packet to add.
+ * @param action Either MTA_KEEP if you want to add the packet directly or MTA_LOAD
+ * if you want to reserve it first.
+ * @pre cp != NULL
+ * @pre action == MTA_LOAD || (action == MTA_KEEP && this->designation_counts[MTA_LOAD] == 0)
+ */
+void VehicleCargoList::Append(CargoPacket *cp, Action action)
+{
+	assert(cp != NULL);
+	assert(action == A_LOAD ||
+			(action == A_KEEP && this->action_counts[A_LOAD] == 0));
+	this->AddToMeta(cp, action);
 
-		if (cp->count <= max_move) {
-			/* Can move the complete packet */
-			max_move -= cp->count;
-			it = this->packets.erase(it);
-			static_cast<Tinst *>(this)->RemoveFromCache(cp);
-			switch (mta) {
-				case MTA_FINAL_DELIVERY:
-					payment->PayFinalDelivery(cp, cp->count);
-					delete cp;
-					continue; // of the loop
-
-				case MTA_CARGO_LOAD:
-					cp->loaded_at_xy = data;
-					break;
-
-				case MTA_TRANSFER:
-					cp->feeder_share += payment->PayTransfer(cp, cp->count);
-					break;
-
-				case MTA_UNLOAD:
-					break;
-			}
-			dest->Append(cp);
-			continue;
-		}
-
-		/* Can move only part of the packet */
-		if (mta == MTA_FINAL_DELIVERY) {
-			/* Final delivery doesn't need package splitting. */
-			payment->PayFinalDelivery(cp, max_move);
-
-			/* Remove the delivered data from the cache */
-			uint left = cp->count - max_move;
-			cp->count = max_move;
-			static_cast<Tinst *>(this)->RemoveFromCache(cp);
-
-			/* Final delivery payment pays the feeder share, so we have to
-			 * reset that so it is not 'shown' twice for partial unloads. */
-			cp->feeder_share = 0;
-			cp->count = left;
-		} else {
-			/* But... the rest needs package splitting. */
-			CargoPacket *cp_new = cp->Split(max_move);
-
-			/* We could not allocate a CargoPacket? Is the map that full? */
-			if (cp_new == NULL) return false;
-
-			static_cast<Tinst *>(this)->RemoveFromCache(cp_new); // this reflects the changes in cp.
-
-			if (mta == MTA_TRANSFER) {
-				/* Add the feeder share before inserting in dest. */
-				cp_new->feeder_share += payment->PayTransfer(cp_new, max_move);
-			} else if (mta == MTA_CARGO_LOAD) {
-				cp_new->loaded_at_xy = data;
-			}
-
-			dest->Append(cp_new);
-		}
-
-		max_move = 0;
+	if (this->count == cp->count) {
+		this->packets.push_back(cp);
+		return;
 	}
 
-	return it != packets.end();
+	uint sum = cp->count;
+	for (ReverseIterator it(this->packets.rbegin()); it != this->packets.rend(); it++) {
+		CargoPacket *icp = *it;
+		if (VehicleCargoList::TryMerge(icp, cp)) return;
+		sum += icp->count;
+		if (sum >= this->action_counts[action]) {
+			this->packets.push_back(cp);
+			return;
+		}
+	}
+
+	NOT_REACHED();
+}
+
+/**
+ * Returns reserved cargo to the station and removes it from the cache.
+ * @param dest Station the cargo is returned to.
+ * @param max_move Maximum amount of cargo to move.
+ * @return Amount of cargo actually returned.
+ */
+uint VehicleCargoList::Return(StationCargoList *dest, uint max_move)
+{
+	max_move = min(this->action_counts[A_LOAD], max_move);
+	this->PopCargo(CargoReturn(this, dest, max_move));
+	return max_move;
+}
+
+/**
+ * Loads cargo onto a vehicle. If the vehicle has reserved cargo load that.
+ * Otherwise load cargo from the station.
+ * @param dest Vehicle cargo list where the cargo resides.
+ * @param max_move Amount of cargo to load.
+ * @return Amount of cargo actually loaded.
+ */
+uint StationCargoList::Load(VehicleCargoList *dest, uint max_move, TileIndex load_place)
+{
+	uint move = min(dest->ActionCount(VehicleCargoList::A_LOAD), max_move);
+	if (move > 0) {
+		this->reserved_count -= move;
+		dest->Reassign(move, VehicleCargoList::A_LOAD, VehicleCargoList::A_KEEP);
+	} else {
+		move = min(this->count, max_move);
+		this->ShiftCargo(CargoLoad(this, dest, move, load_place));
+	}
+	return move;
+}
+
+/**
+ * Reserves cargo for loading onto the vehicle.
+ * @param dest VehicleCargoList to reserve for.
+ * @param max_move Maximum amount of cargo to reserve.
+ * @param load_place Tile index of the current station.
+ * @return Amount of cargo actually reserved.
+ */
+uint StationCargoList::Reserve(VehicleCargoList *dest, uint max_move, TileIndex load_place)
+{
+	max_move = min(this->count, max_move);
+	this->ShiftCargo(CargoReservation(this, dest, max_move, load_place));
+	return max_move;
+}
+
+/**
+ * Unloads cargo at the given station. Deliver or transfer, depending on the
+ * ranges defined by designation_counts.
+ * @param dest StationCargoList to add transferred cargo to.
+ * @param max_move Maximum amount of cargo to move.
+ * @param payment Payment object to register payments in.
+ * @return Amount of cargo actually unloaded.
+ */
+uint VehicleCargoList::Unload(StationCargoList *dest, uint max_move, CargoPayment *payment)
+{
+	uint moved = 0;
+	if (this->action_counts[A_TRANSFER] > 0) {
+		uint move = min(this->action_counts[A_TRANSFER], max_move);
+		this->ShiftCargo(CargoTransfer(this, dest, move, payment));
+		moved += move;
+	}
+	if (this->action_counts[A_TRANSFER] == 0 && this->action_counts[A_DELIVER] > 0 && moved < max_move) {
+		uint move = min(this->action_counts[A_DELIVER], max_move - moved);
+		this->ShiftCargo(CargoDelivery(this, move, payment));
+		moved += move;
+	}
+	return moved;
+}
+
+/**
+ * Shifts cargo between two vehicles.
+ * @param dest Other vehicle's cargo list.
+ * @param max_move Maximum amount of cargo to be moved.
+ * @return Amount of cargo actually moved.
+ */
+uint VehicleCargoList::Shift(VehicleCargoList *dest, uint max_move)
+{
+	max_move = max(this->count, max_move);
+	this->PopCargo(CargoShift(this, dest, max_move));
+	return max_move;
+}
+
+/**
+ * Shift cargo from the front of the packet list and applies some action to it.
+ * @param action Action to be applied. It should define
+ *               "bool operator()(CargoPacket *)". If true is returned the
+ *               cargo packet will be removed from the list. Otherwise it
+ *               will be kept and the loop will be aborted.
+ */
+template <class Tinst>
+template <class Taction>
+void CargoList<Tinst>::ShiftCargo(Taction action)
+{
+	Iterator it(this->packets.begin());
+	while (it != this->packets.end() && action.MaxMove() > 0) {
+		CargoPacket *cp = *it;
+		if (action(cp)) {
+			it = this->packets.erase(it);
+		} else {
+			break;
+		}
+	}
+}
+
+/**
+ * Pops cargo from the back of the packet list and applies some action to it.
+ * @param action Action to be applied. It should define
+ *               "bool operator()(CargoPacket *)". If true is returned the
+ *               cargo packet will be removed from the list. Otherwise it
+ *               will be kept and the loop will be aborted.
+ */
+template <class Tinst>
+template <class Taction>
+void CargoList<Tinst>::PopCargo(Taction action)
+{
+	ReverseIterator it(this->packets.rbegin());
+	while (it != this->packets.rend() && action.MaxMove() > 0) {
+		CargoPacket *cp = *it;
+		if (action(cp)) {
+			this->packets.erase((++it).base());
+		} else {
+			break;
+		}
+	}
 }
 
 /** Invalidates the cached data and rebuilds it. */
@@ -353,14 +449,15 @@ void CargoList<Tinst>::InvalidateCache()
 }
 
 /**
- * Update the cached values to reflect the removal of this packet.
+ * Update the cached values to reflect the removal of this packet or part of it.
  * Decreases count, feeder share and days_in_transit.
  * @param cp Packet to be removed from cache.
+ * @param count Amount of cargo from the given packet to be removed.
  */
-void VehicleCargoList::RemoveFromCache(const CargoPacket *cp)
+void VehicleCargoList::RemoveFromCache(const CargoPacket *cp, uint count)
 {
 	this->feeder_share -= cp->feeder_share;
-	this->Parent::RemoveFromCache(cp);
+	this->Parent::RemoveFromCache(cp, count);
 }
 
 /**
@@ -372,6 +469,33 @@ void VehicleCargoList::AddToCache(const CargoPacket *cp)
 {
 	this->feeder_share += cp->feeder_share;
 	this->Parent::AddToCache(cp);
+}
+
+/**
+ * Removes a packet or part of it from the metadata.
+ * @param cp Packet to be removed.
+ * @param action MoveToAction of the packet (for updating the counts).
+ * @param count Amount of cargo to be removed.
+ */
+void VehicleCargoList::RemoveFromMeta(const CargoPacket *cp, Action action, uint count)
+{
+	this->AssertCountConsistence();
+	this->RemoveFromCache(cp, count);
+	this->action_counts[action] -= count;
+	this->AssertCountConsistence();
+}
+
+/**
+ * Adds a packet to the metadata.
+ * @param cp Packet to be added.
+ * @param action MoveToAction of the packet.
+ */
+void VehicleCargoList::AddToMeta(const CargoPacket *cp, Action action)
+{
+	this->AssertCountConsistence();
+	this->AddToCache(cp);
+	this->action_counts[action] += cp->count;
+	this->AssertCountConsistence();
 }
 
 /**
@@ -389,6 +513,44 @@ void VehicleCargoList::AgeCargo()
 	}
 }
 
+/**
+ * Stages cargo for unloading. The cargo is sorted so that packets to be
+ * transferred, delivered or kept are in consecutive chunks in the list. At the
+ * same time the designation_counts are updated to reflect the size of those
+ * chunks.
+ * @param accepted If the cargo will be accepted at the station.
+ * @param current_station ID of the station.
+ * @param order_flags OrderUnloadFlags that will apply to the unload operation.
+ * return If any cargo will be unloaded.
+ */
+bool VehicleCargoList::Stage(bool accepted, StationID current_station, uint8 order_flags)
+{
+	this->AssertCountConsistence();
+	assert(this->action_counts[A_LOAD] == 0);
+	this->action_counts[A_TRANSFER] = this->action_counts[A_DELIVER] = this->action_counts[A_KEEP] = 0;
+	Iterator deliver = this->packets.end();
+	Iterator it = this->packets.begin();
+	uint sum = 0;
+	while (sum < this->count) {
+		CargoPacket *cp = *it;
+		this->packets.erase(it++);
+		if ((order_flags & OUFB_TRANSFER) != 0 || (!accepted && (order_flags & OUFB_UNLOAD) != 0)) {
+			this->packets.push_front(cp);
+			this->action_counts[A_TRANSFER] += cp->count;
+		} else if (accepted && current_station != cp->source && (order_flags & OUFB_NO_UNLOAD) == 0) {
+			this->packets.insert(deliver, cp);
+			this->action_counts[A_DELIVER] += cp->count;
+		} else {
+			this->packets.push_back(cp);
+			if (deliver == this->packets.end()) --deliver;
+			this->action_counts[A_KEEP] += cp->count;
+		}
+		sum += cp->count;
+	}
+	this->AssertCountConsistence();
+	return this->action_counts[A_DELIVER] > 0 || this->action_counts[A_TRANSFER] > 0;
+}
+
 /** Invalidates the cached data and rebuild it. */
 void VehicleCargoList::InvalidateCache()
 {
@@ -396,15 +558,122 @@ void VehicleCargoList::InvalidateCache()
 	this->Parent::InvalidateCache();
 }
 
+/**
+ * Decides if a packet needs to be split.
+ * @param cp Packet to be either split or moved in one piece.
+ * @return Either new packet if splitting was necessary or the given one
+ *         otherwise.
+ */
+template<class Tsource, class Tdest>
+CargoPacket *CargoMovement<Tsource, Tdest>::Preprocess(CargoPacket *cp)
+{
+	if (this->max_move < cp->Count()) {
+		cp = cp->Split(this->max_move);
+		this->max_move = 0;
+	} else {
+		this->max_move -= cp->Count();
+	}
+	return cp;
+}
+
+/**
+ * Delivers some cargo.
+ * @param cp Packet to be delivered.
+ * @return True if the packet was completely delivered, false if only part of
+ *         it was.
+ */
+bool CargoDelivery::operator()(CargoPacket *cp)
+{
+	if (this->max_move >= cp->Count()) {
+		this->payment->PayFinalDelivery(cp, cp->Count());
+		this->max_move -= cp->Count();
+		this->source->RemoveFromMeta(cp, VehicleCargoList::A_DELIVER, cp->Count());
+		delete cp;
+		return true;
+	} else {
+		this->payment->PayFinalDelivery(cp, this->max_move);
+		this->source->RemoveFromMeta(cp, VehicleCargoList::A_DELIVER, this->max_move);
+		cp->Reduce(this->max_move);
+		this->max_move = 0;
+		return false;
+	}
+}
+
+/**
+ * Returns some reserved cargo.
+ * @param cp Packet to be returned.
+ * @return True if the packet was completely returned, false if part of it was.
+ */
+bool CargoReturn::operator()(CargoPacket *cp)
+{
+	CargoPacket *cp_new = this->Preprocess(cp);
+	if (cp_new == NULL) cp_new = cp;
+	this->source->RemoveFromMeta(cp_new, VehicleCargoList::A_LOAD, cp_new->Count());
+	this->destination->Return(cp_new);
+	return cp_new == cp;
+}
+
+/**
+ * Loads some cargo onto a vehicle.
+ * @param cp Packet to be loaded.
+ * @return True if the packet was completely loaded, false if part of it was.
+ */
+bool CargoLoad::operator()(CargoPacket *cp)
+{
+	CargoPacket *cp_new = this->Preprocess(cp);
+	if (cp_new == NULL) return false;
+	cp_new->SetLoadPlace(this->load_place);
+	this->source->Load(cp_new);
+	this->destination->Append(cp_new, VehicleCargoList::A_KEEP);
+	return cp_new == cp;
+}
+
+/**
+ * Reserves some cargo for loading.
+ * @param cp Packet to be reserved.
+ * @return True if the packet was completely reserved, false if part of it was.
+ */
+bool CargoReservation::operator()(CargoPacket *cp)
+{
+	CargoPacket *cp_new = this->Preprocess(cp);
+	if (cp_new == NULL) return false;
+	cp_new->SetLoadPlace(this->load_place);
+	this->source->Reserve(cp_new);
+	this->destination->Append(cp_new, VehicleCargoList::A_LOAD);
+	return cp_new == cp;
+}
+
+/**
+ * Transfers some cargo from a vehicle to a station.
+ * @param cp Packet to be transfered.
+ * @return True if the packet was completely reserved, false if part of it was.
+ */
+bool CargoTransfer::operator()(CargoPacket *cp)
+{
+	CargoPacket *cp_new = this->Preprocess(cp);
+	if (cp_new == NULL) return false;
+	this->source->RemoveFromMeta(cp_new, VehicleCargoList::A_TRANSFER, cp_new->Count());
+	cp_new->AddFeederShare(payment->PayTransfer(cp_new, cp_new->Count()));
+	this->destination->Append(cp_new);
+	return cp_new == cp;
+}
+
+/**
+ * Shifts some cargo from a vehicle to another one.
+ * @param cp Packet to be shifted.
+ * @return True if the packet was completely shifted, false if part of it was.
+ */
+bool CargoShift::operator()(CargoPacket *cp)
+{
+	CargoPacket *cp_new = this->Preprocess(cp);
+	if (cp_new == NULL) cp_new = cp;
+	this->source->RemoveFromMeta(cp_new, VehicleCargoList::A_KEEP, cp_new->Count());
+	this->destination->Append(cp_new, VehicleCargoList::A_KEEP);
+	return cp_new == cp;
+}
+
 /*
  * We have to instantiate everything we want to be usable.
  */
 template class CargoList<VehicleCargoList>;
 template class CargoList<StationCargoList>;
-
-/** Autoreplace Vehicle -> Vehicle 'transfer'. */
-template bool CargoList<VehicleCargoList>::MoveTo(VehicleCargoList *, uint max_move, MoveToAction mta, CargoPayment *payment, uint data);
-/** Cargo unloading at a station. */
-template bool CargoList<VehicleCargoList>::MoveTo(StationCargoList *, uint max_move, MoveToAction mta, CargoPayment *payment, uint data);
-/** Cargo loading at a station. */
-template bool CargoList<StationCargoList>::MoveTo(VehicleCargoList *, uint max_move, MoveToAction mta, CargoPayment *payment, uint data);
