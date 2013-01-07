@@ -259,7 +259,7 @@ public:
 	}
 
 
-	void Append(CargoPacket *cp, bool update_cache = true);
+	void Append(CargoPacket *cp);
 	void Truncate(uint max_remaining);
 
 	template <class Tother_inst>
@@ -276,7 +276,7 @@ protected:
 	/** The (direct) parent of this class. */
 	typedef CargoList<VehicleCargoList> Parent;
 
-	Money feeder_share;  ///< Cache for the feeder share.
+	Money feeder_share; ///< Cache for the feeder share.
 
 	void AddToCache(const CargoPacket *cp);
 	void RemoveFromCache(const CargoPacket *cp);
@@ -304,22 +304,6 @@ public:
 	inline uint OnboardCount() const
 	{
 		return this->count - this->reserved_count;
-	}
-
-	/**
-	 * Returns source of the first cargo packet in this list.
-	 * If the regular packets list is empty but there are packets
-	 * in the reservation list it returns the source of the first
-	 * reserved packet.
-	 * @return The before mentioned source.
-	 */
-	inline StationID Source() const
-	{
-		if (this->Empty()) {
-			return INVALID_STATION;
-		} else {
-			return this->packets.front()->source;
-		}
 	}
 
 	void Reserve(CargoPacket *cp);
@@ -372,15 +356,6 @@ public:
 				cp1->days_in_transit == cp2->days_in_transit &&
 				cp1->source_type     == cp2->source_type &&
 				cp1->source_id       == cp2->source_id;
-	}
-
-	/**
-	 * Returns source of the first cargo packet in this list.
-	 * @return The before mentioned source.
-	 */
-	inline StationID Source() const
-	{
-		return this->Empty() ? INVALID_STATION : this->packets.front()->source;
 	}
 
 	/**

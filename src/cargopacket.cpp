@@ -186,15 +186,14 @@ void CargoList<Tinst>::AddToCache(const CargoPacket *cp)
  * @warning After appending this packet may not exist anymore!
  * @note Do not use the cargo packet anymore after it has been appended to this CargoList!
  * @param cp Cargo packet to add.
- * @param update_cache If false, the cache is not updated; used when loading from
- *        the reservation list.
  * @pre cp != NULL
  */
 template <class Tinst>
-void CargoList<Tinst>::Append(CargoPacket *cp, bool update_cache)
+void CargoList<Tinst>::Append(CargoPacket *cp)
 {
 	assert(cp != NULL);
-	if (update_cache) static_cast<Tinst *>(this)->AddToCache(cp);
+	static_cast<Tinst *>(this)->AddToCache(cp);
+
 	for (List::reverse_iterator it(this->packets.rbegin()); it != this->packets.rend(); it++) {
 		CargoPacket *icp = *it;
 		if (Tinst::AreMergable(icp, cp) && icp->count + cp->count <= CargoPacket::MAX_COUNT) {
