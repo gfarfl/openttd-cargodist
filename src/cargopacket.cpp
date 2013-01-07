@@ -456,6 +456,30 @@ void VehicleCargoList::AgeCargo()
 	}
 }
 
+void VehicleCargoList::SortForUnload(bool accepted, StationID current_station, OrderUnloadFlags order_flags)
+{
+	assert(this->reserved_count == 0);
+	this->deliver_count = 0;
+	this->transfer_count = 0;
+	this->keep_count = 0;
+	Iterator transfer = this->packets.begin();
+	Iterator it = this->packets.begin();
+	while (this->deliver_count + this->transfer_count + this->keep_count < this->count) {
+		CargoPacket *cp = *it;
+		this->packets.erase(it++);
+		if (accepted && current_station != cp->source /* && has unload order */) {
+			this->packets.push_front(cp);
+			this->deliver_count += cp->count;
+		} else if (order_flags & OUFB_TRANSFER != 0 /* || has force unload order && !accepted */) {
+			this->packets.insert(transfer, cp);
+			this->transfer_count += cp->count;
+		} else {
+			this->packets.push_back(cp);
+			this->keep_count += cp->count;
+		}
+	}
+}
+
 /** Invalidates the cached data and rebuild it. */
 void VehicleCargoList::InvalidateCache()
 {

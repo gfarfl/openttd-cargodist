@@ -276,7 +276,10 @@ protected:
 	/** The (direct) parent of this class. */
 	typedef CargoList<VehicleCargoList> Parent;
 
-	Money feeder_share; ///< Cache for the feeder share.
+	Money feeder_share;  ///< Cache for the feeder share.
+	uint keep_count;     ///< Amount of cargo to keep in the vehicle during unloading.
+	uint deliver_count;  ///< Amount of cargo to deliver to the current station.
+	uint transfer_count; ///< Amount of cargo to be transfered at the current station.
 
 	void AddToCache(const CargoPacket *cp);
 	void RemoveFromCache(const CargoPacket *cp);
@@ -313,6 +316,8 @@ public:
 	void LoadReserved(StationCargoList *from, uint count);
 
 	void AgeCargo();
+
+	void SortForUnload(bool accepted, StationID current_station, OrderUnloadFlags order_flags);
 
 	void InvalidateCache();
 
