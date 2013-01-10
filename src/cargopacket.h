@@ -160,6 +160,8 @@ public:
  */
 #define FOR_ALL_CARGOPACKETS(var) FOR_ALL_CARGOPACKETS_FROM(var, 0)
 
+class MoveAction;
+
 /**
  * Simple collection class for a list of cargo packets.
  * @tparam Tinst Actual instantiation of this cargo list.
@@ -175,15 +177,6 @@ public:
 	typedef List::reverse_iterator ReverseIterator;
 	/** The const iterator for our container. */
 	typedef List::const_iterator ConstIterator;
-
-	/** Kind of actions that could be done with packets on move. */
-	enum MoveToAction {
-		MTA_FINAL_DELIVERY, ///< "Deliver" the packet to the final destination, i.e. destroy the packet.
-		MTA_CARGO_LOAD,     ///< Load the packet onto a vehicle, i.e. set the last loaded station ID.
-		MTA_RESERVE,        ///< Reserve cargo for later loading.
-		MTA_TRANSFER,       ///< The cargo is moved as part of a transfer.
-		MTA_UNLOAD,         ///< The cargo is moved as part of a forced unload.
-	};
 
 protected:
 	uint count;                 ///< Cache for the number of cargo entities.
@@ -262,9 +255,6 @@ public:
 	void Append(CargoPacket *cp);
 	void Truncate(uint max_remaining);
 
-	template <class Tother_inst>
-	bool MoveTo(Tother_inst *dest, uint count, MoveToAction mta, CargoPayment *payment, uint data = 0);
-
 	void InvalidateCache();
 };
 
@@ -309,15 +299,32 @@ public:
 		return this->count - this->reserved_count;
 	}
 
+	/**
+	 * Returns sum of cargo to be kept on board at the current station.
+	 * @return Cargo to be kept on board.
+	 */
+	inline uint KeepCount() const
+	{
+		return this->keep_count;
+	}
+
 	void Reserve(CargoPacket *cp);
 
-	void Unreserve(StationCargoList *dest);
+	uint Balance(VehicleCargoList *other, uint share, uint max_move);
 
-	void LoadReserved(StationCargoList *from, uint count);
+	uint Reserve(StationCargoList *src, uint count, TileIndex load_place);
+
+	uint Return(StationCargoList *dest, uint count = UINT_MAX);
+
+	uint Load(StationCargoList *src, uint count);
+
+	uint Unload(StationCargoList *dest, uint count, uint8 order_flags, CargoPayment *payment);
+
+	uint Shift(VehicleCargoList *dest, uint count);
 
 	void AgeCargo();
 
-	void SortForUnload(bool accepted, StationID current_station, OrderUnloadFlags order_flags);
+	void SortForUnload(bool accepted, StationID current_station, uint8 order_flags);
 
 	void InvalidateCache();
 
@@ -377,7 +384,7 @@ public:
 	 * Return a previously  reserved packet to the station it came from.
 	 * @param cp Packet being returned.
 	 */
-	inline void Unreserve(CargoPacket *cp)
+	inline void Return(CargoPacket *cp)
 	{
 		assert(cp->count <= this->reserved_count);
 		this->reserved_count -= cp->count;
@@ -393,6 +400,45 @@ public:
 		assert(move <= this->reserved_count);
 		this->reserved_count -= move;
 	}
+};
+
+template<class Tdest>
+class CargoMovement {
+protected:
+	Tdest *destination;
+public:
+	CargoMovement(Tdest *destination) : destination(destination) {}
+	void operator()(CargoPacket *cp, uint move);
+};
+
+class CargoDelivery {
+private:
+	CargoPayment *payment;
+public:
+	CargoDelivery(CargoPayment *payment) : payment(payment) {}
+	void operator()(CargoPacket *cp, uint move)
+	{
+		payment->PayFinalDelivery(cp, cp->count);
+		if (move == cp->count) delete cp;
+	}
+};
+
+class CargoTransfer : public CargoMovement<StationCargoList> {
+protected:
+	CargoPayment *payment;
+public:
+	CargoTransfer(StationCargoList *destination, CargoPayment *payment) :
+		CargoMovement<StationCargoList>(destination), payment(payment) {}
+	void operator()(CargoPacket *cp, uint move);
+};
+
+class CargoReservation : public CargoMovement<VehicleCargoList> {
+protected:
+	TileIndex load_place;
+public:
+	CargoReservation(VehicleCargoList *destination, TileIndex load_place) :
+		CargoMovement<VehicleCargoList>(destination), load_place(load_place) {}
+	void operator()(CargoPacket *cp, uint move);
 };
 
 #endif /* CARGOPACKET_H */

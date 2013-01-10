@@ -12,6 +12,7 @@
 #include "stdafx.h"
 #include "core/pool_func.hpp"
 #include "economy_base.h"
+#include "order_type.h"
 
 /* Initialize the cargopacket-pool */
 CargoPacketPool _cargopacket_pool("CargoPacket");
@@ -245,44 +246,70 @@ void CargoList<Tinst>::Truncate(uint max_remaining)
 void VehicleCargoList::Reserve(CargoPacket *cp)
 {
 	assert(cp != NULL);
-	this->Append(cp);
+	this->AddToCache(cp);
+	this->packets.push_back(cp);
 	this->reserved_count += cp->count;
+}
+
+uint StationCargoList::Reserve(VehicleCargoList *dest, uint max_move)
+{
+	cp->loaded_at_xy = data;
+	src->Reserve(cp->count);
+	this->Reserve(cp);
+						continue;
 }
 
 /**
  * Returns all reserved cargo to the station and removes it from the cache.
  * @param dest Station the cargo is returned to.
+ * @param count Maximum amount of cargo to move;
  */
-void VehicleCargoList::Unreserve(StationCargoList *dest)
+uint VehicleCargoList::Unreserve(StationCargoList *dest, uint count)
 {
+	count = min(this->reserved_count, count);
+	uint move = count;
 	ReverseIterator it = this->packets.rbegin();
-	while (this->reserved_count > 0) {
+	while (move > 0) {
 		assert(it != this->packets.rend());
 		CargoPacket *cp = *it;
-		if (cp->count <= this->reserved_count) {
+		if (cp->count <= move) {
 			this->RemoveFromCache(cp);
 			this->reserved_count -= cp->count;
-			dest->Unreserve(cp);
+			move -= cp->count;
+			dest->Return(cp);
 			this->packets.erase((++it).base());
 		} else {
-			cp->count -= this->reserved_count;
-			CargoPacket *cp_new = new CargoPacket(this->reserved_count, cp->days_in_transit, cp->source, cp->source_xy, cp->loaded_at_xy, 0, cp->source_type, cp->source_id);
-			dest->Unreserve(cp_new);
-			this->reserved_count = 0;
+			cp->count -= move;
+			CargoPacket *cp_new = new CargoPacket(move, cp->days_in_transit, cp->source, cp->source_xy, cp->loaded_at_xy, 0, cp->source_type, cp->source_id);
+			dest->Return(cp_new);
+			move -= cp_new->count;
+			this->reserved_count -= cp_new->count;
 		}
 	}
+	return count;
 }
 
 /**
  * Load packets from the reservation list.
  * @param from Station cargo list from where the cargo ist loaded.
  * @param count Number of cargo to load.
+ * @return Amount of cargo actually loaded.
  */
-void VehicleCargoList::LoadReserved(StationCargoList *from, uint max_move)
+uint VehicleCargoList::Load(uint max_move)
 {
 	uint move = min(this->reserved_count, max_move);
 	this->reserved_count -= move;
-	from->LoadReserved(move);
+	return move;
+}
+
+uint VehicleCargoList::Unload(StationCargoList *dest, uint max_move, uint8 order_flags, CargoPayment *payment)
+{
+
+}
+
+uint VehicleCargoList::Shift(VehicleCargoList *other, uint max_move)
+{
+
 }
 
 /**
@@ -307,26 +334,19 @@ void VehicleCargoList::LoadReserved(StationCargoList *from, uint max_move)
  * @return True if there are still packets that might be moved from this cargo list.
  */
 template <class Tinst>
-template <class Tother_inst>
-bool CargoList<Tinst>::MoveTo(Tother_inst *dest, uint max_move, MoveToAction mta, CargoPayment *payment, uint data)
+template <class Taction>
+bool CargoList<Tinst>::Move(Taction action, uint max_move)
 {
-	assert(mta == MTA_FINAL_DELIVERY || dest != NULL);
-	assert(mta == MTA_UNLOAD || mta == MTA_CARGO_LOAD || mta == MTA_RESERVE || payment != NULL);
-
 	Iterator it(this->packets.begin());
 	while (it != this->packets.end() && max_move > 0) {
 		CargoPacket *cp = *it;
-		if (cp->source == data && mta == MTA_FINAL_DELIVERY) {
-			/* Skip cargo that originated from this station. */
-			++it;
-			continue;
-		}
 
 		if (cp->count <= max_move) {
 			/* Can move the complete packet */
 			max_move -= cp->count;
 			it = this->packets.erase(it);
 			static_cast<Tinst *>(this)->RemoveFromCache(cp);
+			action(cp, cp->count);
 			switch (mta) {
 				case MTA_FINAL_DELIVERY:
 					payment->PayFinalDelivery(cp, cp->count);
@@ -336,20 +356,8 @@ bool CargoList<Tinst>::MoveTo(Tother_inst *dest, uint max_move, MoveToAction mta
 				case MTA_RESERVE:
 					cp->loaded_at_xy = data;
 					this->reserved_count += cp->count;
-					/* this reinterpret cast is nasty. The method should be
-					 * refactored to get rid of it. However, as this is only
-					 * a step on the way to cargodist and the whole method is
-					 * rearranged in a later step we can tolerate it to make the
-					 * patches smaller.
-					 * MTA_RESERVE can only happen if dest is a vehicle, so we
-					 * cannot crash here. I don't know a way to assert that,
-					 * though. */
-					reinterpret_cast<VehicleCargoList *>(dest)->Reserve(cp);
+					dest->Reserve(cp->count);
 					continue;
-
-				case MTA_CARGO_LOAD:
-					cp->loaded_at_xy = data;
-					break;
 
 				case MTA_TRANSFER:
 					cp->feeder_share += payment->PayTransfer(cp, cp->count);
@@ -456,26 +464,64 @@ void VehicleCargoList::AgeCargo()
 	}
 }
 
-void VehicleCargoList::SortForUnload(bool accepted, StationID current_station, OrderUnloadFlags order_flags)
+void VehicleCargoList::SortForUnload(bool accepted, StationID current_station, uint8 order_flags)
 {
 	assert(this->reserved_count == 0);
 	this->deliver_count = 0;
 	this->transfer_count = 0;
 	this->keep_count = 0;
-	Iterator transfer = this->packets.begin();
+	Iterator deliver = this->packets.begin();
 	Iterator it = this->packets.begin();
 	while (this->deliver_count + this->transfer_count + this->keep_count < this->count) {
 		CargoPacket *cp = *it;
 		this->packets.erase(it++);
-		if (accepted && current_station != cp->source /* && has unload order */) {
-			this->packets.push_front(cp);
+		if (accepted && current_station != cp->source && (order_flags & OUFB_NO_UNLOAD) == 0) {
+			this->packets.insert(deliver, cp);
 			this->deliver_count += cp->count;
-		} else if (order_flags & OUFB_TRANSFER != 0 /* || has force unload order && !accepted */) {
-			this->packets.insert(transfer, cp);
+		} else if ((order_flags & OUFB_TRANSFER) != 0 || (!accepted && (order_flags & OUFB_UNLOAD) != 0)) {
+			this->packets.push_front(cp);
 			this->transfer_count += cp->count;
 		} else {
 			this->packets.push_back(cp);
 			this->keep_count += cp->count;
+		}
+	}
+}
+
+/**
+ * Balance the reserved lists by transferring transferring some packets.
+ * @param other Cargo list to balance with.
+ * @param share Share of the overall reserved cargo each of the vehicles should get.
+ * @param max_move Maximum amount of cargo to be moved.
+ */
+void VehicleCargoList::Balance(VehicleCargoList *other, uint share, uint cap)
+{
+	/* Move at most as much cargo as needed so that both have the same amount. */
+	uint max_move = min((this->reserved_count - other->reserved_count) / 2, cap);
+	/* Move at least as much cargo to fill the other vehicle to its share (if possible). */
+	uint min_move = min(share - other->reserved_count, max_move);
+	uint moved = 0;
+	ReverseIterator it(this->packets.rbegin());
+	while (it != this->packets.rend() && moved < min_move) {
+		CargoPacket *cp = *it;
+		if (cp->count <= max_move - moved) {
+			this->RemoveFromCache(cp);
+			this->reserved_count -= cp->count;
+			this->packets.erase((++it).base());
+			other->Reserve(cp);
+			moved += cp->count;
+		} else if (CargoPacket::CanAllocateItem()) {
+			uint move = (max_move + min_move) / 2 - moved;
+			cp->count -= move;
+			CargoPacket *cp_new = new CargoPacket(move, cp->days_in_transit, cp->source, cp->source_xy, cp->loaded_at_xy, 0, cp->source_type, cp->source_id);
+			this->RemoveFromCache(cp_new);
+			this->reserved_count -= move;
+			other->Reserve(cp_new);
+			moved += move;
+		} else {
+			/* If this actually happens it will desync. There is not much we
+			 * can do when out of memory, though. */
+			break;
 		}
 	}
 }
