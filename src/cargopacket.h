@@ -68,6 +68,7 @@ public:
 	void Reduce(uint count);
 
 	void SetLoadPlace(TileIndex load_place) { this->loaded_at_xy = load_place; }
+	void AddFeederShare(Money new_share) { this->feeder_share += new_share; }
 
 	/**
 	 * Gets the number of 'items' in this packet.
@@ -193,10 +194,10 @@ protected:
 	void RemoveFromCache(const CargoPacket *cp, uint count);
 
 	template<class Taction>
-	void ShiftCargo(Taction &action);
+	void ShiftCargo(Taction action);
 
 	template<class Taction>
-	void PopCargo(Taction &action);
+	void PopCargo(Taction action);
 
 public:
 	/** Create the cargo list. */
@@ -312,10 +313,30 @@ public:
 		this->RemoveFromCache(cp, cp->count);
 	}
 
+	inline void Load(CargoPacket *cp)
+	{
+		this->keep_count += cp->count;
+		this->Append(cp);
+	}
+
 	inline void LoadReserved(uint count)
 	{
 		assert(count <= this->reserved_count);
 		this->reserved_count -= count;
+		this->keep_count += count;
+	}
+
+	inline void TransferDeliver(uint count)
+	{
+		assert(count <= this->deliver_count);
+		this->deliver_count -= count;
+		this->transfer_count += count;
+	}
+
+	inline void KeepDeliver(uint count)
+	{
+		assert(count <= this->deliver_count);
+		this->deliver_count -= count;
 		this->keep_count += count;
 	}
 
@@ -347,6 +368,33 @@ public:
 		return this->keep_count;
 	}
 
+	/**
+	 * Returns sum of cargo to be delivered at the current station.
+	 * @return Cargo to be delivered.
+	 */
+	inline uint DeliverCount() const
+	{
+		return this->deliver_count;
+	}
+
+	/**
+	 * Returns sum of cargo to be delivered at the current station.
+	 * @return Cargo to be delivered.
+	 */
+	inline uint TransferCount() const
+	{
+		return this->transfer_count;
+	}
+
+	/**
+	 * Returns sum of cargo to be moved out of the vehicle at the current station.
+	 * @return Cargo to be moved.
+	 */
+	inline uint MoveCount() const
+	{
+		return this->transfer_count + this->deliver_count;
+	}
+
 	void Reserve(CargoPacket *cp);
 
 	void Keep(CargoPacket *cp);
@@ -355,7 +403,7 @@ public:
 
 	uint Return(StationCargoList *dest, uint count = UINT_MAX);
 
-	uint Unload(StationCargoList *dest, uint count, uint8 order_flags, CargoPayment *payment);
+	uint Unload(StationCargoList *dest, uint count, CargoPayment *payment);
 
 	uint Shift(VehicleCargoList *dest, uint count);
 
@@ -438,10 +486,19 @@ public:
 		this->reserved_count -= move;
 	}
 
-	void Reserve(CargoPacket *cp) { this->reserved_count += cp->count; }
+	void Reserve(CargoPacket *cp)
+	{
+		this->reserved_count += cp->count;
+		this->RemoveFromCache(cp, cp->count);
+	}
+
+	void Load(CargoPacket *cp)
+	{
+		this->RemoveFromCache(cp, cp->count);
+	}
 
 	uint Reserve(VehicleCargoList *dest, uint count, TileIndex load_place);
-	uint Load(VehicleCargoList *dest, uint count);
+	uint Load(VehicleCargoList *dest, uint count, TileIndex load_place);
 };
 
 template<class Tsource, class Tdest>
@@ -462,7 +519,7 @@ private:
 	CargoPayment *payment;
 	uint max_move;
 public:
-	CargoDelivery(VehicleCargoList *source, CargoPayment *payment, uint max_move) : source(source), payment(payment), max_move(max_move) {}
+	CargoDelivery(VehicleCargoList *source, uint max_move, CargoPayment *payment) : source(source), payment(payment), max_move(max_move) {}
 	bool operator()(CargoPacket *cp);
 	uint MaxMove() { return this->max_move; }
 };
@@ -476,12 +533,19 @@ public:
 	bool operator()(CargoPacket *cp);
 };
 
-class CargoReservation : public CargoMovement<StationCargoList, VehicleCargoList> {
+class CargoLoad : public CargoMovement<StationCargoList, VehicleCargoList> {
 protected:
 	TileIndex load_place;
 public:
-	CargoReservation(StationCargoList *source, VehicleCargoList *destination, uint max_move, TileIndex load_place) :
+	CargoLoad(StationCargoList *source, VehicleCargoList *destination, uint max_move, TileIndex load_place) :
 			CargoMovement<StationCargoList, VehicleCargoList>(source, destination, max_move), load_place(load_place) {}
+	bool operator()(CargoPacket *cp);
+};
+
+class CargoReservation : public CargoLoad {
+public:
+	CargoReservation(StationCargoList *source, VehicleCargoList *destination, uint max_move, TileIndex load_place) :
+			CargoLoad(source, destination, max_move, load_place) {}
 	bool operator()(CargoPacket *cp);
 };
 

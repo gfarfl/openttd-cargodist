@@ -231,7 +231,7 @@ void CargoList<Tinst>::Truncate(uint max_remaining)
 		if (max_remaining == 0) {
 			/* Nothing should remain, just remove the packets. */
 			it = this->packets.erase(it);
-			static_cast<Tinst *>(this)->RemoveFromCache(cp);
+			static_cast<Tinst *>(this)->RemoveFromCache(cp, cp->count);
 			delete cp;
 			continue;
 		}
@@ -274,12 +274,11 @@ void VehicleCargoList::Keep(CargoPacket *cp)
  * @param dest Station the cargo is returned to.
  * @param count Maximum amount of cargo to move;
  */
-uint VehicleCargoList::Return(StationCargoList *dest, uint count)
+uint VehicleCargoList::Return(StationCargoList *dest, uint max_move)
 {
-	count = min(this->reserved_count, count);
-	CargoReturn action(this, dest, count);
-	this->PopCargo(action);
-	return count;
+	max_move = min(this->reserved_count, max_move);
+	this->PopCargo(CargoReturn(this, dest, max_move));
+	return max_move;
 }
 
 /**
@@ -288,27 +287,37 @@ uint VehicleCargoList::Return(StationCargoList *dest, uint count)
  * @param count Number of cargo to load.
  * @return Amount of cargo actually loaded.
  */
-uint StationCargoList::Load(VehicleCargoList *dest, uint max_move)
+uint StationCargoList::Load(VehicleCargoList *dest, uint max_move, TileIndex load_place)
 {
 	uint move = min(dest->ReservedCount(), max_move);
-	this->reserved_count -= move;
-	dest->LoadReserved(move);
+	if (move > 0) {
+		this->reserved_count -= move;
+		dest->LoadReserved(move);
+	} else {
+		move = min(this->count, max_move);
+		this->ShiftCargo(CargoLoad(this, dest, move, load_place));
+	}
 	return move;
 }
 
-uint VehicleCargoList::Unload(StationCargoList *dest, uint max_move, uint8 order_flags, CargoPayment *payment)
+uint StationCargoList::Reserve(VehicleCargoList *dest, uint max_move, TileIndex load_place)
+{
+	max_move = min(this->count, max_move);
+	this->ShiftCargo(CargoReservation(this, dest, max_move, load_place));
+	return max_move;
+}
+
+uint VehicleCargoList::Unload(StationCargoList *dest, uint max_move, CargoPayment *payment)
 {
 	uint moved = 0;
 	if (this->transfer_count > 0) {
 		uint move = min(this->transfer_count, max_move);
-		CargoTransfer action(this, dest, move, payment);
-		this->ShiftCargo(action);
+		this->ShiftCargo(CargoTransfer(this, dest, move, payment));
 		moved += move;
 	}
 	if (this->transfer_count == 0 && this->deliver_count > 0 && moved < max_move) {
 		uint move = min(this->deliver_count, max_move - moved);
-		CargoTransfer action(this, dest, move, payment);
-		this->ShiftCargo(action);
+		this->ShiftCargo(CargoDelivery(this, move, payment));
 		moved += move;
 	}
 	return moved;
@@ -316,7 +325,9 @@ uint VehicleCargoList::Unload(StationCargoList *dest, uint max_move, uint8 order
 
 uint VehicleCargoList::Shift(VehicleCargoList *other, uint max_move)
 {
-
+	max_move = max(this->count, max_move);
+	this->PopCargo(CargoShift(this, other, max_move));
+	return max_move;
 }
 
 /**
@@ -342,7 +353,7 @@ uint VehicleCargoList::Shift(VehicleCargoList *other, uint max_move)
  */
 template <class Tinst>
 template <class Taction>
-void CargoList<Tinst>::ShiftCargo(Taction &action)
+void CargoList<Tinst>::ShiftCargo(Taction action)
 {
 	Iterator it(this->packets.begin());
 	while (it != this->packets.end() && action.MaxMove() > 0) {
@@ -357,7 +368,7 @@ void CargoList<Tinst>::ShiftCargo(Taction &action)
 
 template <class Tinst>
 template <class Taction>
-void CargoList<Tinst>::PopCargo(Taction &action)
+void CargoList<Tinst>::PopCargo(Taction action)
 {
 	ReverseIterator it(this->packets.rbegin());
 	while (it != this->packets.rend() && action.MaxMove() > 0) {
@@ -451,10 +462,10 @@ bool VehicleCargoList::Stage(bool accepted, StationID current_station, uint8 ord
  * @param share Share of the overall reserved cargo each of the vehicles should get.
  * @param max_move Maximum amount of cargo to be moved.
  */
-void VehicleCargoList::Balance(VehicleCargoList *other, uint share, uint cap)
+uint VehicleCargoList::Balance(VehicleCargoList *other, uint max_move, uint share)
 {
 	/* Move at most as much cargo as needed so that both have the same amount. */
-	uint max_move = min((this->reserved_count - other->reserved_count) / 2, cap);
+	max_move = min((this->reserved_count - other->reserved_count) / 2, max_move);
 	/* Move at least as much cargo to fill the other vehicle to its share (if possible). */
 	uint min_move = min(share - other->reserved_count, max_move);
 	uint moved = 0;
@@ -462,7 +473,7 @@ void VehicleCargoList::Balance(VehicleCargoList *other, uint share, uint cap)
 	while (it != this->packets.rend() && moved < min_move) {
 		CargoPacket *cp = *it;
 		if (cp->count <= max_move - moved) {
-			this->RemoveFromCache(cp);
+			this->RemoveFromCache(cp, cp->count);
 			this->reserved_count -= cp->count;
 			this->packets.erase((++it).base());
 			other->Reserve(cp);
@@ -471,7 +482,7 @@ void VehicleCargoList::Balance(VehicleCargoList *other, uint share, uint cap)
 			uint move = (max_move + min_move) / 2 - moved;
 			cp->count -= move;
 			CargoPacket *cp_new = new CargoPacket(move, cp->days_in_transit, cp->source, cp->source_xy, cp->loaded_at_xy, 0, cp->source_type, cp->source_id);
-			this->RemoveFromCache(cp_new);
+			this->RemoveFromCache(cp_new, cp_new->count);
 			this->reserved_count -= move;
 			other->Reserve(cp_new);
 			moved += move;
@@ -481,6 +492,7 @@ void VehicleCargoList::Balance(VehicleCargoList *other, uint share, uint cap)
 			break;
 		}
 	}
+	return moved;
 }
 
 /** Invalidates the cached data and rebuild it. */
@@ -527,6 +539,16 @@ bool CargoReturn::operator()(CargoPacket *cp)
 	return cp_new != cp;
 }
 
+bool CargoLoad::operator()(CargoPacket *cp)
+{
+	CargoPacket *cp_new = this->Preprocess(cp);
+	if (cp_new == NULL) return true;
+	cp_new->SetLoadPlace(this->load_place);
+	this->source->Load(cp_new);
+	this->destination->Load(cp_new);
+	return cp_new != cp;
+}
+
 bool CargoReservation::operator()(CargoPacket *cp)
 {
 	CargoPacket *cp_new = this->Preprocess(cp);
@@ -542,7 +564,7 @@ bool CargoTransfer::operator()(CargoPacket *cp)
 	CargoPacket *cp_new = this->Preprocess(cp);
 	if (cp_new == NULL) return true;
 	this->source->RemoveFromTransfer(cp_new);
-	cp_new->feeder_share += payment->PayTransfer(cp_new, cp_new->count);
+	cp_new->AddFeederShare(payment->PayTransfer(cp_new, cp_new->Count()));
 	this->destination->Append(cp_new);
 	return cp_new != cp;
 }
@@ -561,10 +583,3 @@ bool CargoShift::operator()(CargoPacket *cp)
  */
 template class CargoList<VehicleCargoList>;
 template class CargoList<StationCargoList>;
-
-/** Autoreplace Vehicle -> Vehicle 'transfer'. */
-template bool CargoList<VehicleCargoList>::MoveTo(VehicleCargoList *, uint max_move, MoveToAction mta, CargoPayment *payment, uint data);
-/** Cargo unloading at a station. */
-template bool CargoList<VehicleCargoList>::MoveTo(StationCargoList *, uint max_move, MoveToAction mta, CargoPayment *payment, uint data);
-/** Cargo loading at a station. */
-template bool CargoList<StationCargoList>::MoveTo(VehicleCargoList *, uint max_move, MoveToAction mta, CargoPayment *payment, uint data);
