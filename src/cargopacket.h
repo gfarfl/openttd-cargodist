@@ -65,6 +65,9 @@ public:
 
 	CargoPacket *Split(uint new_size);
 	void Merge(CargoPacket *cp);
+	void Reduce(uint count);
+
+	void SetLoadPlace(TileIndex load_place) { this->loaded_at_xy = load_place; }
 
 	/**
 	 * Gets the number of 'items' in this packet.
@@ -187,7 +190,13 @@ protected:
 
 	void AddToCache(const CargoPacket *cp);
 
-	void RemoveFromCache(const CargoPacket *cp);
+	void RemoveFromCache(const CargoPacket *cp, uint count);
+
+	template<class Taction>
+	void ShiftCargo(Taction &action);
+
+	template<class Taction>
+	void PopCargo(Taction &action);
 
 public:
 	/** Create the cargo list. */
@@ -251,7 +260,6 @@ public:
 		return this->count == 0 ? 0 : this->cargo_days_in_transit / this->count;
 	}
 
-
 	void Append(CargoPacket *cp);
 	void Truncate(uint max_remaining);
 
@@ -272,13 +280,44 @@ protected:
 	uint transfer_count; ///< Amount of cargo to be transfered at the current station.
 
 	void AddToCache(const CargoPacket *cp);
-	void RemoveFromCache(const CargoPacket *cp);
+	void RemoveFromCache(const CargoPacket *cp, uint count);
 
 public:
 	/** The super class ought to know what it's doing. */
 	friend class CargoList<VehicleCargoList>;
 	/** The vehicles have a cargo list (and we want that saved). */
 	friend const struct SaveLoad *GetVehicleDescription(VehicleType vt);
+
+	inline void RemoveFromTransfer(const CargoPacket *cp)
+	{
+		this->transfer_count -= cp->count;
+		this->RemoveFromCache(cp, cp->count);
+	}
+
+	inline void RemoveFromDeliver(const CargoPacket *cp, uint count)
+	{
+		this->deliver_count -= count;
+		this->RemoveFromCache(cp, count);
+	}
+
+	inline void RemoveFromReserved(const CargoPacket *cp)
+	{
+		this->reserved_count -= cp->count;
+		this->RemoveFromCache(cp, cp->count);
+	}
+
+	inline void RemoveFromKeep(const CargoPacket *cp)
+	{
+		this->keep_count -= cp->count;
+		this->RemoveFromCache(cp, cp->count);
+	}
+
+	inline void LoadReserved(uint count)
+	{
+		assert(count <= this->reserved_count);
+		this->reserved_count -= count;
+		this->keep_count += count;
+	}
 
 	/**
 	 * Returns total sum of the feeder share for all packets.
@@ -310,13 +349,11 @@ public:
 
 	void Reserve(CargoPacket *cp);
 
+	void Keep(CargoPacket *cp);
+
 	uint Balance(VehicleCargoList *other, uint share, uint max_move);
 
-	uint Reserve(StationCargoList *src, uint count, TileIndex load_place);
-
 	uint Return(StationCargoList *dest, uint count = UINT_MAX);
-
-	uint Load(StationCargoList *src, uint count);
 
 	uint Unload(StationCargoList *dest, uint count, uint8 order_flags, CargoPayment *payment);
 
@@ -324,7 +361,7 @@ public:
 
 	void AgeCargo();
 
-	void SortForUnload(bool accepted, StationID current_station, uint8 order_flags);
+	bool Stage(bool accepted, StationID current_station, uint8 order_flags);
 
 	void InvalidateCache();
 
@@ -400,45 +437,66 @@ public:
 		assert(move <= this->reserved_count);
 		this->reserved_count -= move;
 	}
+
+	void Reserve(CargoPacket *cp) { this->reserved_count += cp->count; }
+
+	uint Reserve(VehicleCargoList *dest, uint count, TileIndex load_place);
+	uint Load(VehicleCargoList *dest, uint count);
 };
 
-template<class Tdest>
+template<class Tsource, class Tdest>
 class CargoMovement {
 protected:
+	Tsource *source;
 	Tdest *destination;
+	uint max_move;
+	CargoPacket *Preprocess(CargoPacket *cp);
 public:
-	CargoMovement(Tdest *destination) : destination(destination) {}
-	void operator()(CargoPacket *cp, uint move);
+	CargoMovement(Tsource *source, Tdest *destination, uint max_move) : source(source), destination(destination), max_move(max_move) {}
+	uint MaxMove() { return this->max_move; }
 };
 
 class CargoDelivery {
 private:
+	VehicleCargoList *source;
 	CargoPayment *payment;
+	uint max_move;
 public:
-	CargoDelivery(CargoPayment *payment) : payment(payment) {}
-	void operator()(CargoPacket *cp, uint move)
-	{
-		payment->PayFinalDelivery(cp, cp->count);
-		if (move == cp->count) delete cp;
-	}
+	CargoDelivery(VehicleCargoList *source, CargoPayment *payment, uint max_move) : source(source), payment(payment), max_move(max_move) {}
+	bool operator()(CargoPacket *cp);
+	uint MaxMove() { return this->max_move; }
 };
 
-class CargoTransfer : public CargoMovement<StationCargoList> {
+class CargoTransfer : public CargoMovement<VehicleCargoList, StationCargoList> {
 protected:
 	CargoPayment *payment;
 public:
-	CargoTransfer(StationCargoList *destination, CargoPayment *payment) :
-		CargoMovement<StationCargoList>(destination), payment(payment) {}
-	void operator()(CargoPacket *cp, uint move);
+	CargoTransfer(VehicleCargoList *source, StationCargoList *destination, uint max_move, CargoPayment *payment) :
+			CargoMovement<VehicleCargoList, StationCargoList>(source, destination, max_move), payment(payment) {}
+	bool operator()(CargoPacket *cp);
 };
 
-class CargoReservation : public CargoMovement<VehicleCargoList> {
+class CargoReservation : public CargoMovement<StationCargoList, VehicleCargoList> {
 protected:
 	TileIndex load_place;
 public:
-	CargoReservation(VehicleCargoList *destination, TileIndex load_place) :
-		CargoMovement<VehicleCargoList>(destination), load_place(load_place) {}
-	void operator()(CargoPacket *cp, uint move);
+	CargoReservation(StationCargoList *source, VehicleCargoList *destination, uint max_move, TileIndex load_place) :
+			CargoMovement<StationCargoList, VehicleCargoList>(source, destination, max_move), load_place(load_place) {}
+	bool operator()(CargoPacket *cp);
+};
+
+class CargoReturn : public CargoMovement<VehicleCargoList, StationCargoList> {
+public:
+	CargoReturn(VehicleCargoList *source, StationCargoList *destination, uint max_move) :
+			CargoMovement<VehicleCargoList, StationCargoList>(source, destination, max_move) {}
+	bool operator()(CargoPacket *cp);
+};
+
+class CargoShift : public CargoMovement<VehicleCargoList, VehicleCargoList> {
+public:
+	CargoShift(VehicleCargoList *source, VehicleCargoList *destination, uint max_move) :
+			CargoMovement<VehicleCargoList, VehicleCargoList>(source, destination, max_move) {}
+	bool operator()(CargoPacket *cp);
 };
 
 #endif /* CARGOPACKET_H */
