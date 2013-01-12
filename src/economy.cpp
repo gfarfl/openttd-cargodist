@@ -1400,10 +1400,10 @@ static void LoadUnloadVehicle(Vehicle *front)
 				/* The station does not accept our goods anymore. */
 				if (front->current_order.GetUnloadType() & (OUFB_TRANSFER | OUFB_UNLOAD)) {
 					/* Transfer instead of delivering. */
-					v->cargo.TransferDeliver(v->cargo.DeliverCount());
+					v->cargo.Reassign(v->cargo.DeliverCount(), VehicleCargoList::D_DELIVER, VehicleCargoList::D_TRANSFER);
 				} else {
 					/* Keep instead of delivering. This may lead to no cargo being unloaded, so ...*/
-					v->cargo.KeepDeliver(v->cargo.DeliverCount());
+					v->cargo.Reassign(v->cargo.DeliverCount(), VehicleCargoList::D_DELIVER, VehicleCargoList::D_KEEP);
 
 					/* ... say we unloaded something, otherwise we'll think we didn't unload
 					 * something and we didn't load something, so we must be finished

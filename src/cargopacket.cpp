@@ -18,6 +18,13 @@
 CargoPacketPool _cargopacket_pool("CargoPacket");
 INSTANTIATE_POOL_METHODS(CargoPacket)
 
+uint VehicleCargoList::*VehicleCargoList::counts[] = {
+	&VehicleCargoList::transfer_count,
+	&VehicleCargoList::deliver_count,
+	&VehicleCargoList::keep_count,
+	&VehicleCargoList::reserved_count
+};
+
 /**
  * Create a new packet for savegame loading.
  */
@@ -250,23 +257,51 @@ void CargoList<Tinst>::Truncate(uint max_remaining)
 	}
 }
 
-/**
- * Reserves a packet for later loading and adds it to the cache.
- * @param cp Packet to be reserved.
- */
-void VehicleCargoList::Reserve(CargoPacket *cp)
+// TODO: We cannot allow appends in the middle of the list as Reassign may shift the counts.
+// Append is only allowed at the beginning or the end of the list. The counts are checked
+// for 0 to find out if allowed. If reserved, no searching.
+void VehicleCargoList::Append(CargoPacket *cp, Designation mode)
 {
 	assert(cp != NULL);
 	this->AddToCache(cp);
-	this->packets.push_back(cp);
-	this->reserved_count += cp->count;
-}
 
-void VehicleCargoList::Keep(CargoPacket *cp)
-{
-	assert(this->keep_count == this->count);
-	this->keep_count += cp->count;
-	this->Append(cp);
+	if (mode == D_RESERVED) {
+		/* There's no point in searching for mergeable packets when reserving
+		 * as the station cargo list we're getting them from would have merged
+		 * them already if that had been possible. */
+		this->reserved_count += cp->count;
+		this->packets.push_back(cp);
+		return;
+	}
+
+	uint current_count = 0;
+	int current_mode = D_END - 1;
+	bool try_merge = false;
+	for (List::reverse_iterator it(this->packets.rbegin()); it != this->packets.rend(); it++) {
+		assert(current_count <= this->*VehicleCargoList::counts[current_mode]);
+		if (current_count == this->*VehicleCargoList::counts[current_mode]) {
+			if (try_merge) {
+				this->*counts[current_mode] += cp->count;
+				this->packets.insert(it.base(), cp);
+				return;
+			} else {
+				--current_mode;
+				current_count = 0;
+				try_merge = (current_mode == mode);
+			}
+		} else {
+			CargoPacket *icp = *it;
+			current_count += icp->count;
+			if (try_merge && VehicleCargoList::AreMergable(icp, cp) &&
+					icp->count + cp->count <= CargoPacket::MAX_COUNT) {
+				icp->Merge(cp);
+				return;
+			}
+		}
+	}
+
+	/* The packet could not be merged with another one */
+	this->packets.push_front(cp);
 }
 
 /**
@@ -292,7 +327,7 @@ uint StationCargoList::Load(VehicleCargoList *dest, uint max_move, TileIndex loa
 	uint move = min(dest->ReservedCount(), max_move);
 	if (move > 0) {
 		this->reserved_count -= move;
-		dest->LoadReserved(move);
+		dest->Reassign(move, VehicleCargoList::D_RESERVED, VehicleCargoList::D_KEEP);
 	} else {
 		move = min(this->count, max_move);
 		this->ShiftCargo(CargoLoad(this, dest, move, load_place));
@@ -416,6 +451,18 @@ void VehicleCargoList::AddToCache(const CargoPacket *cp)
 	this->Parent::AddToCache(cp);
 }
 
+void VehicleCargoList::RemoveFromMeta(const CargoPacket *cp, Designation mode, uint count)
+{
+	this->RemoveFromCache(cp, count);
+	this->*VehicleCargoList::counts[mode] -= count;
+}
+
+void VehicleCargoList::AddToMeta(const CargoPacket *cp, Designation mode)
+{
+	this->AddToCache(cp);
+	this->*VehicleCargoList::counts[mode] += count;
+}
+
 /**
  * Ages the all cargo in this list.
  */
@@ -473,18 +520,16 @@ uint VehicleCargoList::Balance(VehicleCargoList *other, uint max_move, uint shar
 	while (it != this->packets.rend() && moved < min_move) {
 		CargoPacket *cp = *it;
 		if (cp->count <= max_move - moved) {
-			this->RemoveFromCache(cp, cp->count);
-			this->reserved_count -= cp->count;
+			this->RemoveFromMeta(cp, D_RESERVED, cp->count);
 			this->packets.erase((++it).base());
-			other->Reserve(cp);
+			other->Append(cp, D_RESERVED);
 			moved += cp->count;
 		} else if (CargoPacket::CanAllocateItem()) {
 			uint move = (max_move + min_move) / 2 - moved;
 			cp->count -= move;
 			CargoPacket *cp_new = new CargoPacket(move, cp->days_in_transit, cp->source, cp->source_xy, cp->loaded_at_xy, 0, cp->source_type, cp->source_id);
-			this->RemoveFromCache(cp_new, cp_new->count);
-			this->reserved_count -= move;
-			other->Reserve(cp_new);
+			this->RemoveFromMeta(cp_new, D_RESERVED, cp_new->count);
+			other->Append(cp_new, D_RESERVED);
 			moved += move;
 		} else {
 			/* If this actually happens it will desync. There is not much we
@@ -519,11 +564,11 @@ bool CargoDelivery::operator()(CargoPacket *cp)
 	if (this->max_move >= cp->Count()) {
 		this->payment->PayFinalDelivery(cp, cp->Count());
 		this->max_move -= cp->Count();
-		this->source->RemoveFromDeliver(cp, cp->Count());
+		this->source->RemoveFromMeta(cp, VehicleCargoList::D_DELIVER, cp->Count());
 		delete cp;
 		return false;
 	} else {
-		this->source->RemoveFromDeliver(cp, this->max_move);
+		this->source->RemoveFromMeta(cp, VehicleCargoList::D_DELIVER, this->max_move);
 		cp->Reduce(this->max_move);
 		this->max_move = 0;
 		return true;
@@ -534,7 +579,7 @@ bool CargoReturn::operator()(CargoPacket *cp)
 {
 	CargoPacket *cp_new = this->Preprocess(cp);
 	if (cp_new == NULL) cp_new = cp;
-	this->source->RemoveFromReserved(cp_new);
+	this->source->RemoveFromMeta(cp_new, VehicleCargoList::D_RESERVED, cp_new->Count());
 	this->destination->Return(cp_new);
 	return cp_new != cp;
 }
@@ -545,7 +590,7 @@ bool CargoLoad::operator()(CargoPacket *cp)
 	if (cp_new == NULL) return true;
 	cp_new->SetLoadPlace(this->load_place);
 	this->source->Load(cp_new);
-	this->destination->Load(cp_new);
+	this->destination->Append(cp_new, VehicleCargoList::D_KEEP);
 	return cp_new != cp;
 }
 
@@ -555,7 +600,7 @@ bool CargoReservation::operator()(CargoPacket *cp)
 	if (cp_new == NULL) return true;
 	cp_new->SetLoadPlace(this->load_place);
 	this->source->Reserve(cp_new);
-	this->destination->Reserve(cp_new);
+	this->destination->Append(cp_new, VehicleCargoList::D_RESERVED);
 	return cp_new != cp;
 }
 
@@ -563,7 +608,7 @@ bool CargoTransfer::operator()(CargoPacket *cp)
 {
 	CargoPacket *cp_new = this->Preprocess(cp);
 	if (cp_new == NULL) return true;
-	this->source->RemoveFromTransfer(cp_new);
+	this->source->RemoveFromMeta(cp_new, VehicleCargoList::D_TRANSFER, cp_new->Count());
 	cp_new->AddFeederShare(payment->PayTransfer(cp_new, cp_new->Count()));
 	this->destination->Append(cp_new);
 	return cp_new != cp;
@@ -573,8 +618,8 @@ bool CargoShift::operator()(CargoPacket *cp)
 {
 	CargoPacket *cp_new = this->Preprocess(cp);
 	if (cp_new == NULL) cp_new = cp;
-	this->source->RemoveFromKeep(cp_new);
-	this->destination->Keep(cp_new);
+	this->source->RemoveFromMeta(cp_new, VehicleCargoList::D_KEEP, cp_new->Count());
+	this->destination->Append(cp_new, VehicleCargoList::D_KEEP);
 	return cp_new != cp;
 }
 

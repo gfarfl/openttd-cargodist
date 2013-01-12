@@ -65,6 +65,11 @@
 		}
 	}
 
+	if (IsSavegameVersionBefore(SL_RESERVATION)) {
+		Vehicle *v;
+		FOR_ALL_VEHICLES(v) v->cargo.KeepAll();
+	}
+
 	if (!IsSavegameVersionBefore(68)) {
 		/* Only since version 68 we have cargo packets. Savegames from before used
 		 * 'new CargoPacket' + cargolist.Append so their caches are already

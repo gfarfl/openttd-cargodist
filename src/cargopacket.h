@@ -271,6 +271,16 @@ public:
  * CargoList that is used for vehicles.
  */
 class VehicleCargoList : public CargoList<VehicleCargoList> {
+public:
+	enum Designation {
+		D_BEGIN = 0,
+		D_KEEP = 0,
+		D_DELIVER,
+		D_TRANSFER,
+		D_RESERVED,
+		D_END
+	};
+
 protected:
 	/** The (direct) parent of this class. */
 	typedef CargoList<VehicleCargoList> Parent;
@@ -279,6 +289,8 @@ protected:
 	uint keep_count;     ///< Amount of cargo to keep in the vehicle during unloading.
 	uint deliver_count;  ///< Amount of cargo to deliver to the current station.
 	uint transfer_count; ///< Amount of cargo to be transfered at the current station.
+
+	static uint VehicleCargoList::*counts[4];
 
 	void AddToCache(const CargoPacket *cp);
 	void RemoveFromCache(const CargoPacket *cp, uint count);
@@ -289,55 +301,21 @@ public:
 	/** The vehicles have a cargo list (and we want that saved). */
 	friend const struct SaveLoad *GetVehicleDescription(VehicleType vt);
 
-	inline void RemoveFromTransfer(const CargoPacket *cp)
+	void Append(CargoPacket *cp, Designation mode = D_KEEP);
+
+	void RemoveFromMeta(const CargoPacket *cp, Designation mode, uint count);
+	void AddToMeta(const CargoPacket *cp, Designation mode);
+
+	void Reassign(uint count, Designation from, Designation to)
 	{
-		this->transfer_count -= cp->count;
-		this->RemoveFromCache(cp, cp->count);
+		this->*VehicleCargoList::counts[from] -= count;
+		this->*VehicleCargoList::counts[to] += count;
 	}
 
-	inline void RemoveFromDeliver(const CargoPacket *cp, uint count)
+	inline void KeepAll()
 	{
-		this->deliver_count -= count;
-		this->RemoveFromCache(cp, count);
-	}
-
-	inline void RemoveFromReserved(const CargoPacket *cp)
-	{
-		this->reserved_count -= cp->count;
-		this->RemoveFromCache(cp, cp->count);
-	}
-
-	inline void RemoveFromKeep(const CargoPacket *cp)
-	{
-		this->keep_count -= cp->count;
-		this->RemoveFromCache(cp, cp->count);
-	}
-
-	inline void Load(CargoPacket *cp)
-	{
-		this->keep_count += cp->count;
-		this->Append(cp);
-	}
-
-	inline void LoadReserved(uint count)
-	{
-		assert(count <= this->reserved_count);
-		this->reserved_count -= count;
-		this->keep_count += count;
-	}
-
-	inline void TransferDeliver(uint count)
-	{
-		assert(count <= this->deliver_count);
-		this->deliver_count -= count;
-		this->transfer_count += count;
-	}
-
-	inline void KeepDeliver(uint count)
-	{
-		assert(count <= this->deliver_count);
-		this->deliver_count -= count;
-		this->keep_count += count;
+		this->deliver_count = this->transfer_count = this->reserved_count = 0;
+		this->keep_count = this->count;
 	}
 
 	/**
@@ -394,10 +372,6 @@ public:
 	{
 		return this->transfer_count + this->deliver_count;
 	}
-
-	void Reserve(CargoPacket *cp);
-
-	void Keep(CargoPacket *cp);
 
 	uint Balance(VehicleCargoList *other, uint share, uint max_move);
 
@@ -486,13 +460,13 @@ public:
 		this->reserved_count -= move;
 	}
 
-	void Reserve(CargoPacket *cp)
+	inline void Reserve(CargoPacket *cp)
 	{
 		this->reserved_count += cp->count;
 		this->RemoveFromCache(cp, cp->count);
 	}
 
-	void Load(CargoPacket *cp)
+	inline void Load(CargoPacket *cp)
 	{
 		this->RemoveFromCache(cp, cp->count);
 	}
