@@ -1254,7 +1254,7 @@ static void ReserveConsist(Station *st, Vehicle *u, CargoArray *consist_capleft)
 				continue;
 			}
 
-			uint cap = v->cargo_cap - v->cargo.KeepCount() - v->cargo.ReservedCount();
+			uint cap = v->cargo_cap - v->cargo.RemainingCount();
 
 			/* Nothing to do if the vehicle is full */
 			if (cap > 0) {
@@ -1262,7 +1262,7 @@ static void ReserveConsist(Station *st, Vehicle *u, CargoArray *consist_capleft)
 			}
 
 			/* We can do that here because balancing doesn't change the total count. */
-			consist_reserved += v->cargo.ReservedCount();
+			consist_reserved += v->cargo.DesignationCount(VehicleCargoList::D_LOAD);
 
 			if (consist_capleft != NULL) {
 				(*consist_capleft)[current_cargo] += cap;
@@ -1272,12 +1272,12 @@ static void ReserveConsist(Station *st, Vehicle *u, CargoArray *consist_capleft)
 			}
 
 			uint share = consist_reserved / ++num_same_cargo;
-			if (cap > 0 && v->cargo.ReservedCount() < share) {
+			if (cap > 0 && v->cargo.DesignationCount(VehicleCargoList::D_LOAD) < share) {
 				Vehicle *balance = last_balance;
 				do {
 					if (!HasBit(balance->vehicle_flags, VF_CARGO_UNLOADING) &&
 							balance->cargo_type == current_cargo &&
-							balance->cargo.ReservedCount() > share) {
+							balance->cargo.DesignationCount(VehicleCargoList::D_LOAD) > share) {
 						balance->cargo.Balance(&v->cargo, cap, share);
 						last_balance = balance->Next();
 						break;
@@ -1390,20 +1390,20 @@ static void LoadUnloadVehicle(Vehicle *front)
 		GoodsEntry *ge = &st->goods[v->cargo_type];
 
 		if (HasBit(v->vehicle_flags, VF_CARGO_UNLOADING) && (front->current_order.GetUnloadType() & OUFB_NO_UNLOAD) == 0) {
-			uint cargo_count = v->cargo.MoveCount();
+			uint cargo_count = v->cargo.UnloadCount();
 			uint amount_unloaded = _settings_game.order.gradual_loading ? min(cargo_count, load_amount) : cargo_count;
 			bool remaining = false; // Are there cargo entities in this vehicle that can still be unloaded here?
 
 			payment->SetCargo(v->cargo_type);
 
-			if (!HasBit(ge->acceptance_pickup, GoodsEntry::GES_ACCEPTANCE) && v->cargo.DeliverCount() > 0) {
+			if (!HasBit(ge->acceptance_pickup, GoodsEntry::GES_ACCEPTANCE) && v->cargo.DesignationCount(VehicleCargoList::D_DELIVER) > 0) {
 				/* The station does not accept our goods anymore. */
 				if (front->current_order.GetUnloadType() & (OUFB_TRANSFER | OUFB_UNLOAD)) {
 					/* Transfer instead of delivering. */
-					v->cargo.Reassign(v->cargo.DeliverCount(), VehicleCargoList::D_DELIVER, VehicleCargoList::D_TRANSFER);
+					v->cargo.Reassign(v->cargo.DesignationCount(VehicleCargoList::D_DELIVER), VehicleCargoList::D_DELIVER, VehicleCargoList::D_TRANSFER);
 				} else {
 					/* Keep instead of delivering. This may lead to no cargo being unloaded, so ...*/
-					v->cargo.Reassign(v->cargo.DeliverCount(), VehicleCargoList::D_DELIVER, VehicleCargoList::D_KEEP);
+					v->cargo.Reassign(v->cargo.DesignationCount(VehicleCargoList::D_DELIVER), VehicleCargoList::D_DELIVER, VehicleCargoList::D_KEEP);
 
 					/* ... say we unloaded something, otherwise we'll think we didn't unload
 					 * something and we didn't load something, so we must be finished
@@ -1414,9 +1414,9 @@ static void LoadUnloadVehicle(Vehicle *front)
 			}
 
 			/* Mark the station dirty if we transfer, but not if we only deliver. */
-			dirty_station = v->cargo.TransferCount() > 0;
+			dirty_station = v->cargo.DesignationCount(VehicleCargoList::D_TRANSFER) > 0;
 			amount_unloaded = v->cargo.Unload(&ge->cargo, amount_unloaded, payment);
-			remaining = v->cargo.DeliverCount() + v->cargo.TransferCount() > 0;
+			remaining = v->cargo.UnloadCount() > 0;
 			if (amount_unloaded > 0) {
 				dirty_vehicle = true;
 				anything_unloaded = true;

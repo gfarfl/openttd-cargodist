@@ -599,10 +599,7 @@ const SaveLoad *GetVehicleDescription(VehicleType vt)
 		     SLE_VAR(Vehicle, cargo_cap,             SLE_UINT16),
 		SLEG_CONDVAR(         _cargo_count,          SLE_UINT16,                   0,  67),
 		 SLE_CONDLST(Vehicle, cargo.packets,         REF_CARGO_PACKET,            68, SL_MAX_VERSION),
-		 SLE_CONDVAR(Vehicle, cargo.transfer_count,  SLE_UINT,        SL_RESERVATION, SL_MAX_VERSION),
-		 SLE_CONDVAR(Vehicle, cargo.deliver_count,   SLE_UINT,        SL_RESERVATION, SL_MAX_VERSION),
-		 SLE_CONDVAR(Vehicle, cargo.keep_count,      SLE_UINT,        SL_RESERVATION, SL_MAX_VERSION),
-		 SLE_CONDVAR(Vehicle, cargo.reserved_count,  SLE_UINT,        SL_RESERVATION, SL_MAX_VERSION),
+		 SLE_CONDARR(Vehicle, cargo.designation_counts,SLE_UINT, VehicleCargoList::NUM_DESIGNATION, SL_RESERVATION, SL_MAX_VERSION),
 		 SLE_CONDVAR(Vehicle, cargo_age_counter,     SLE_UINT16,                 162, SL_MAX_VERSION),
 
 		     SLE_VAR(Vehicle, day_counter,           SLE_UINT8),

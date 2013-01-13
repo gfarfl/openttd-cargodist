@@ -184,7 +184,6 @@ public:
 
 protected:
 	uint count;                 ///< Cache for the number of cargo entities.
-	uint reserved_count;        ///< Amount of cargo being reserved for loading.
 	uint cargo_days_in_transit; ///< Cache for the sum of number of days in transit of each entity; comparable to man-hours.
 
 	List packets;               ///< The cargo packets in this list.
@@ -198,6 +197,8 @@ protected:
 
 	template<class Taction>
 	void PopCargo(Taction action);
+
+	static bool TryMerge(CargoPacket *cp, CargoPacket *icp);
 
 public:
 	/** Create the cargo list. */
@@ -235,15 +236,6 @@ public:
 	}
 
 	/**
-	 * Returns sum of cargo reserved for the vehicle.
-	 * @return Cargo reserved for the vehicle.
-	 */
-	inline uint ReservedCount() const
-	{
-		return this->reserved_count;
-	}
-
-	/**
 	 * Returns source of the first cargo packet in this list.
 	 * @return The before mentioned source.
 	 */
@@ -277,20 +269,17 @@ public:
 		D_KEEP = 0,
 		D_DELIVER,
 		D_TRANSFER,
-		D_RESERVED,
-		D_END
+		D_LOAD,
+		D_END,
+		NUM_DESIGNATION = D_END
 	};
 
 protected:
 	/** The (direct) parent of this class. */
 	typedef CargoList<VehicleCargoList> Parent;
 
-	Money feeder_share;  ///< Cache for the feeder share.
-	uint keep_count;     ///< Amount of cargo to keep in the vehicle during unloading.
-	uint deliver_count;  ///< Amount of cargo to deliver to the current station.
-	uint transfer_count; ///< Amount of cargo to be transfered at the current station.
-
-	static uint VehicleCargoList::*counts[4];
+	Money feeder_share;                       ///< Cache for the feeder share.
+	uint designation_counts[NUM_DESIGNATION]; ///< Counts of cargo to be transfered, delivered, kept and loaded.
 
 	void AddToCache(const CargoPacket *cp);
 	void RemoveFromCache(const CargoPacket *cp, uint count);
@@ -306,16 +295,16 @@ public:
 	void RemoveFromMeta(const CargoPacket *cp, Designation mode, uint count);
 	void AddToMeta(const CargoPacket *cp, Designation mode);
 
-	void Reassign(uint count, Designation from, Designation to)
+	inline void Reassign(uint count, Designation from, Designation to)
 	{
-		this->*VehicleCargoList::counts[from] -= count;
-		this->*VehicleCargoList::counts[to] += count;
+		this->designation_counts[from] -= count;
+		this->designation_counts[to] += count;
 	}
 
 	inline void KeepAll()
 	{
-		this->deliver_count = this->transfer_count = this->reserved_count = 0;
-		this->keep_count = this->count;
+		this->designation_counts[D_DELIVER] = this->designation_counts[D_TRANSFER] = this->designation_counts[D_LOAD] = 0;
+		this->designation_counts[D_KEEP] = this->count;
 	}
 
 	/**
@@ -327,6 +316,11 @@ public:
 		return this->feeder_share;
 	}
 
+	inline uint DesignationCount(Designation mode) const
+	{
+		return this->designation_counts[mode];
+	}
+
 	/**
 	 * Returns sum of cargo on board the vehicle (ie not only
 	 * reserved).
@@ -334,43 +328,21 @@ public:
 	 */
 	inline uint OnboardCount() const
 	{
-		return this->count - this->reserved_count;
-	}
-
-	/**
-	 * Returns sum of cargo to be kept on board at the current station.
-	 * @return Cargo to be kept on board.
-	 */
-	inline uint KeepCount() const
-	{
-		return this->keep_count;
-	}
-
-	/**
-	 * Returns sum of cargo to be delivered at the current station.
-	 * @return Cargo to be delivered.
-	 */
-	inline uint DeliverCount() const
-	{
-		return this->deliver_count;
-	}
-
-	/**
-	 * Returns sum of cargo to be delivered at the current station.
-	 * @return Cargo to be delivered.
-	 */
-	inline uint TransferCount() const
-	{
-		return this->transfer_count;
+		return this->count - this->designation_counts[D_LOAD];
 	}
 
 	/**
 	 * Returns sum of cargo to be moved out of the vehicle at the current station.
 	 * @return Cargo to be moved.
 	 */
-	inline uint MoveCount() const
+	inline uint UnloadCount() const
 	{
-		return this->transfer_count + this->deliver_count;
+		return this->designation_counts[D_TRANSFER] + this->designation_counts[D_DELIVER];
+	}
+
+	inline uint RemainingCount() const
+	{
+		return this->designation_counts[D_KEEP] + this->designation_counts[D_LOAD];
 	}
 
 	uint Balance(VehicleCargoList *other, uint share, uint max_move);
@@ -408,6 +380,9 @@ public:
  * CargoList that is used for stations.
  */
 class StationCargoList : public CargoList<StationCargoList> {
+protected:
+	uint reserved_count;        ///< Amount of cargo being reserved for loading.
+
 public:
 	/** The super class ought to know what it's doing. */
 	friend class CargoList<StationCargoList>;
@@ -427,6 +402,15 @@ public:
 				cp1->days_in_transit == cp2->days_in_transit &&
 				cp1->source_type     == cp2->source_type &&
 				cp1->source_id       == cp2->source_id;
+	}
+
+	/**
+	 * Returns sum of cargo reserved for the vehicle.
+	 * @return Cargo reserved for the vehicle.
+	 */
+	inline uint ReservedCount() const
+	{
+		return this->reserved_count;
 	}
 
 	/**
