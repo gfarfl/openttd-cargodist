@@ -284,6 +284,14 @@ protected:
 	void AddToCache(const CargoPacket *cp);
 	void RemoveFromCache(const CargoPacket *cp, uint count);
 
+	inline void AssertCountConsistence() const
+	{
+		assert(this->designation_counts[D_KEEP] +
+				this->designation_counts[D_DELIVER] +
+				this->designation_counts[D_TRANSFER] +
+				this->designation_counts[D_LOAD] == this->count);
+	}
+
 public:
 	/** The super class ought to know what it's doing. */
 	friend class CargoList<VehicleCargoList>;

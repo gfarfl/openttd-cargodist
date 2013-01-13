@@ -464,14 +464,18 @@ void VehicleCargoList::AddToCache(const CargoPacket *cp)
 
 void VehicleCargoList::RemoveFromMeta(const CargoPacket *cp, Designation mode, uint count)
 {
+	this->AssertCountConsistence();
 	this->RemoveFromCache(cp, count);
 	this->designation_counts[mode] -= count;
+	this->AssertCountConsistence();
 }
 
 void VehicleCargoList::AddToMeta(const CargoPacket *cp, Designation mode)
 {
+	this->AssertCountConsistence();
 	this->AddToCache(cp);
-	this->designation_counts[mode] += count;
+	this->designation_counts[mode] += cp->count;
+	this->AssertCountConsistence();
 }
 
 /**
@@ -491,9 +495,10 @@ void VehicleCargoList::AgeCargo()
 
 bool VehicleCargoList::Stage(bool accepted, StationID current_station, uint8 order_flags)
 {
+	this->AssertCountConsistence();
 	assert(this->designation_counts[D_LOAD] == 0);
 	this->designation_counts[D_TRANSFER] = this->designation_counts[D_DELIVER] = this->designation_counts[D_KEEP] = 0;
-	Iterator deliver = this->packets.begin();
+	Iterator deliver = this->packets.end();
 	Iterator it = this->packets.begin();
 	uint sum = 0;
 	while (sum < this->count) {
@@ -507,10 +512,12 @@ bool VehicleCargoList::Stage(bool accepted, StationID current_station, uint8 ord
 			this->designation_counts[D_TRANSFER] += cp->count;
 		} else {
 			this->packets.push_back(cp);
+			if (deliver == this->packets.end()) --deliver;
 			this->designation_counts[D_KEEP] += cp->count;
 		}
 		sum += cp->count;
 	}
+	this->AssertCountConsistence();
 	return this->designation_counts[D_DELIVER] > 0 || this->designation_counts[D_TRANSFER] > 0;
 }
 
@@ -562,12 +569,12 @@ template<class Tsource, class Tdest>
 CargoPacket *CargoMovement<Tsource, Tdest>::Preprocess(CargoPacket *cp)
 {
 	if (this->max_move < cp->Count()) {
+		cp = cp->Split(this->max_move);
 		this->max_move = 0;
-		return cp->Split(this->max_move);
 	} else {
 		this->max_move -= cp->Count();
-		return cp;
 	}
+	return cp;
 }
 
 bool CargoDelivery::operator()(CargoPacket *cp)
