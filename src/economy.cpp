@@ -1222,91 +1222,11 @@ void PrepareUnload(Vehicle *front_v)
 }
 
 /**
- * Reserves cargo if the full load order and improved_load is set.
- * @param st Atation where the consist is loading at the moment.
- * @param u Front of the loading vehicle consist.
- * @param consist_capleft If given, save free capacities after reserving there.
+ * Gets the amount of cargo the given vehicle can load in the current tick.
+ * This is only about loading speed. The free capacity is ignored.
+ * @param v Vehicle to be queried.
+ * @return Amount of cargo the vehicle can load at once.
  */
-static void ReserveConsist(Station *st, Vehicle *u, CargoArray *consist_capleft)
-{
-	Vehicle *next_cargo = u;
-	uint32 seen_cargos = 0;
-
-	while (next_cargo != NULL) {
-		if (next_cargo->cargo_cap == 0) {
-			/* No need to reserve for vehicles without capacity. */
-			next_cargo = next_cargo->Next();
-			continue;
-		}
-
-		CargoID current_cargo = next_cargo->cargo_type;
-		uint consist_reserved = 0;
-		uint num_same_cargo = 0;
-
-		Vehicle *v = next_cargo;
-		Vehicle *last_balance = next_cargo;
-		SetBit(seen_cargos, current_cargo);
-		next_cargo = NULL;
-		for (; v != NULL; v = v->Next()) {
-			if (v->cargo_type != current_cargo) {
-				/* Save start point for next cargo type. */
-				if (next_cargo == NULL && !HasBit(seen_cargos, v->cargo_type)) next_cargo = v;
-				continue;
-			}
-
-			uint cap = v->cargo_cap - v->cargo.RemainingCount();
-
-			/* Nothing to do if the vehicle is full */
-			if (cap > 0) {
-				cap -= st->goods[v->cargo_type].cargo.Reserve(&v->cargo, cap, st->xy);
-			}
-
-			/* We can do that here because balancing doesn't change the total count. */
-			consist_reserved += v->cargo.ActionCount(VehicleCargoList::A_LOAD);
-
-			if (consist_capleft != NULL) {
-				(*consist_capleft)[current_cargo] += cap;
-
-				/* Don't balance on autorefit. */
-				continue;
-			}
-
-			uint share = consist_reserved / ++num_same_cargo;
-			if (cap > 0 && v->cargo.ActionCount(VehicleCargoList::A_LOAD) < share) {
-				Vehicle *balance = last_balance;
-				do {
-					if (!HasBit(balance->vehicle_flags, VF_CARGO_UNLOADING) &&
-							balance->cargo_type == current_cargo &&
-							balance->cargo.ActionCount(VehicleCargoList::A_LOAD) > share) {
-						balance->cargo.Balance(&v->cargo, cap, share);
-						last_balance = balance->Next();
-						break;
-					}
-					balance = balance->Next();
-					assert(balance != NULL);
-					if (balance == v) balance = u;
-				} while (balance != last_balance);
-			}
-		}
-	}
-}
-
-/**
- * Checks whether an articulated vehicle is empty.
- * @param v Vehicle
- * @return true if all parts are empty.
- */
-static bool IsArticulatedVehicleEmpty(Vehicle *v)
-{
-	v = v->GetFirstEnginePart();
-
-	for (; v != NULL; v = v->HasArticulatedPart() ? v->GetNextArticulatedPart() : NULL) {
-		if (v->cargo.Count() != 0) return false;
-	}
-
-	return true;
-}
-
 static byte GetLoadAmount(Vehicle *v)
 {
 	const Engine *e = v->GetEngine();
@@ -1337,6 +1257,91 @@ static byte GetLoadAmount(Vehicle *v)
 }
 
 /**
+ * Reserves cargo if the full load order and improved_load is set or if the
+ * current order allows autorefit.
+ * @param st Station where the consist is loading at the moment.
+ * @param u Front of the loading vehicle consist.
+ * @param consist_capleft If given, save free capacities after reserving there.
+ */
+static void ReserveConsist(Station *st, Vehicle *u, CargoArray *consist_capleft)
+{
+	Vehicle *next_cargo = u;
+	uint32 seen_cargos = 0;
+
+	while (next_cargo != NULL) {
+		if (next_cargo->cargo_cap == 0) {
+			/* No need to reserve for vehicles without capacity. */
+			next_cargo = next_cargo->Next();
+			continue;
+		}
+
+		CargoID current_cargo = next_cargo->cargo_type;
+
+		Vehicle *v = next_cargo;
+		Vehicle *last_balance = next_cargo;
+		SetBit(seen_cargos, current_cargo);
+		next_cargo = NULL;
+		for (; v != NULL; v = v->Next()) {
+			if (v->cargo_type != current_cargo) {
+				/* Save start point for next cargo type. */
+				if (next_cargo == NULL && !HasBit(seen_cargos, v->cargo_type)) next_cargo = v;
+				continue;
+			}
+			v->vcache.load_amount = GetLoadAmount(v);
+
+			uint cap = v->cargo_cap - v->cargo.RemainingCount();
+
+			/* Nothing to do if the vehicle is full */
+			if (cap > 0) {
+				cap -= st->goods[v->cargo_type].cargo.Reserve(&v->cargo, cap, st->xy);
+			}
+
+			if (consist_capleft != NULL) {
+				(*consist_capleft)[current_cargo] += cap;
+
+				/* Don't balance on autorefit. */
+				continue;
+			}
+
+			if (cap > 0 && v->cargo.ActionCount(VehicleCargoList::A_LOAD) < v->vcache.load_amount) {
+				Vehicle *balance = last_balance;
+				do {
+					if (balance->cargo_type == current_cargo &&
+							balance->cargo.ActionCount(VehicleCargoList::A_LOAD) > balance->vcache.load_amount) {
+						balance->cargo.Balance(&v->cargo,
+								/* Leave at least one full chunk of cargo for balance and move at most cap. */
+								min(cap, balance->cargo.ActionCount(VehicleCargoList::A_LOAD) - balance->vcache.load_amount),
+								/* Try to move at least enough cargo to get one full chunk for v. */
+								v->vcache.load_amount - v->cargo.ActionCount(VehicleCargoList::A_LOAD));
+						last_balance = balance->Next();
+						break;
+					}
+					balance = balance->Next();
+					assert(balance != NULL);
+					if (balance == v) balance = u;
+				} while (balance != last_balance);
+			}
+		}
+	}
+}
+
+/**
+ * Checks whether an articulated vehicle is empty.
+ * @param v Vehicle
+ * @return true if all parts are empty.
+ */
+static bool IsArticulatedVehicleEmpty(Vehicle *v)
+{
+	v = v->GetFirstEnginePart();
+
+	for (; v != NULL; v = v->HasArticulatedPart() ? v->GetNextArticulatedPart() : NULL) {
+		if (v->cargo.Count() != 0) return false;
+	}
+
+	return true;
+}
+
+/**
  * Loads/unload the vehicle if possible.
  * @param front the vehicle to be (un)loaded
  */
@@ -1348,10 +1353,9 @@ static void LoadUnloadVehicle(Vehicle *front)
 	Station *st = Station::Get(last_visited);
 
 	bool use_autorefit = front->current_order.IsRefit() && front->current_order.GetRefitCargo() == CT_AUTO_REFIT;
+	bool reserve = _settings_game.order.improved_load && ((front->current_order.GetLoadType() & OLFB_FULL_LOAD) != 0 || use_autorefit);
 	CargoArray consist_capleft;
-	if (_settings_game.order.improved_load && ((front->current_order.GetLoadType() & OLFB_FULL_LOAD) != 0 || use_autorefit)) {
-		ReserveConsist(st, front, use_autorefit ? &consist_capleft : NULL);
-	}
+	if (reserve) ReserveConsist(st, front, use_autorefit ? &consist_capleft : NULL);
 
 	/* We have not waited enough time till the next round of loading/unloading */
 	if (front->load_unload_ticks != 0) return;
@@ -1385,7 +1389,7 @@ static void LoadUnloadVehicle(Vehicle *front)
 		if (v->cargo_cap == 0) continue;
 		artic_part++;
 
-		byte load_amount = GetLoadAmount(v);
+		byte load_amount = reserve ? v->vcache.load_amount : GetLoadAmount(v);
 
 		GoodsEntry *ge = &st->goods[v->cargo_type];
 

@@ -104,7 +104,9 @@ struct VehicleCache {
 	uint16 cached_max_speed;        ///< Maximum speed of the consist (minimum of the max speed of all vehicles in the consist).
 	uint16 cached_cargo_age_period; ///< Number of ticks before carried cargo is aged.
 
-	byte cached_vis_effect;  ///< Visual effect to show (see #VisualEffect)
+	byte cached_vis_effect;         ///< Visual effect to show (see #VisualEffect)
+
+	byte load_amount;               ///< Amount of cargo to be loaded or unloaded in the current loading round.
 };
 
 /** A vehicle pool for a little over 1 million vehicles. */

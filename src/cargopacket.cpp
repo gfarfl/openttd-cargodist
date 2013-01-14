@@ -552,19 +552,15 @@ bool VehicleCargoList::Stage(bool accepted, StationID current_station, uint8 ord
 }
 
 /**
- * Balance the reserved lists by transferring some packets.
+ * Balances the reserved lists by transferring some packets. Tries not to split packets.
  * @param dest Cargo list to balance with.
- * @param share Share of the overall reserved cargo each of the vehicles should get.
  * @param max_move Maximum amount of cargo to be moved.
+ * @param min_move Minimum amount of cargo to be moved.
  */
-uint VehicleCargoList::Balance(VehicleCargoList *dest, uint max_move, uint share)
+uint VehicleCargoList::Balance(VehicleCargoList *dest, uint max_move, uint min_move)
 {
-	/* Move at most as much cargo as needed so that both have the same amount. */
-	max_move = min((this->action_counts[A_LOAD] - dest->action_counts[A_LOAD]) / 2, max_move);
 	uint prev_count = this->count;
-	this->PopCargo(CargoBalance(this, dest, max_move,
-			/* Try to move least as much cargo to fill the other vehicle to its share. */
-			min(share - dest->action_counts[A_LOAD], max_move)));
+	this->PopCargo(CargoBalance(this, dest, max_move, min_move));
 	return this->count - prev_count;
 }
 
@@ -698,7 +694,7 @@ bool CargoBalance::operator()(CargoPacket *cp)
 {
 	if (this->min_move == 0) return false;
 	CargoPacket *cp_new = this->Preprocess(cp);
-	this->min_move = cp_new->Count() < this->min_move ? cp_new->Count() - min_move : 0;
+	this->min_move -= min(cp_new->Count(), this->min_move);
 	this->source->RemoveFromMeta(cp_new, VehicleCargoList::A_LOAD, cp->Count());
 	this->destination->Append(cp_new, VehicleCargoList::A_LOAD);
 	return cp_new == cp;
