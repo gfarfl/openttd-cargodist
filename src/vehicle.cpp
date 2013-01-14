@@ -1989,7 +1989,7 @@ void Vehicle::CancelReservation(Station *st)
 {
 	for (Vehicle *v = this; v != NULL; v = v->next) {
 		VehicleCargoList &cargo = v->cargo;
-		if (cargo.DesignationCount(VehicleCargoList::D_LOAD) > 0) {
+		if (cargo.ActionCount(VehicleCargoList::A_LOAD) > 0) {
 			DEBUG(misc, 1, "cancelling cargo reservation");
 			cargo.Return(&st->goods[v->cargo_type].cargo);
 		}

@@ -271,22 +271,26 @@ public:
  */
 class VehicleCargoList : public CargoList<VehicleCargoList> {
 public:
-	enum Designation {
-		D_BEGIN = 0,
-		D_KEEP = 0,
-		D_DELIVER,
-		D_TRANSFER,
-		D_LOAD,
-		D_END,
-		NUM_DESIGNATION = D_END
+	/**
+	 * Action to be performed with a share of cargo when loading/unloading at
+	 * the current station.
+	 */
+	enum Action {
+		A_BEGIN = 0,
+		A_KEEP = 0, ///< Keep the cargo in the vehicle.
+		A_DELIVER,  ///< Deliver the cargo to some town or industry.
+		A_TRANSFER, ///< Transfer the cargo to the station.
+		A_LOAD,     ///< Load the cargo from the station.
+		A_END,
+		NUM_ACTION = A_END
 	};
 
 protected:
 	/** The (direct) parent of this class. */
 	typedef CargoList<VehicleCargoList> Parent;
 
-	Money feeder_share;                       ///< Cache for the feeder share.
-	uint designation_counts[NUM_DESIGNATION]; ///< Counts of cargo to be transfered, delivered, kept and loaded.
+	Money feeder_share;                     ///< Cache for the feeder share.
+	uint action_counts[NUM_ACTION]; ///< Counts of cargo to be transfered, delivered, kept and loaded.
 
 	void AddToCache(const CargoPacket *cp);
 	void RemoveFromCache(const CargoPacket *cp, uint count);
@@ -296,10 +300,10 @@ protected:
 	 */
 	inline void AssertCountConsistence() const
 	{
-		assert(this->designation_counts[D_KEEP] +
-				this->designation_counts[D_DELIVER] +
-				this->designation_counts[D_TRANSFER] +
-				this->designation_counts[D_LOAD] == this->count);
+		assert(this->action_counts[A_KEEP] +
+				this->action_counts[A_DELIVER] +
+				this->action_counts[A_TRANSFER] +
+				this->action_counts[A_LOAD] == this->count);
 	}
 
 public:
@@ -308,23 +312,23 @@ public:
 	/** The vehicles have a cargo list (and we want that saved). */
 	friend const struct SaveLoad *GetVehicleDescription(VehicleType vt);
 
-	void Append(CargoPacket *cp, Designation mode = D_KEEP);
+	void Append(CargoPacket *cp, Action action = A_KEEP);
 
-	void RemoveFromMeta(const CargoPacket *cp, Designation mode, uint count);
-	void AddToMeta(const CargoPacket *cp, Designation mode);
+	void RemoveFromMeta(const CargoPacket *cp, Action action, uint count);
+	void AddToMeta(const CargoPacket *cp, Action action);
 
 	/**
 	 * Moves some cargo from one designation to another. You can only move
 	 * between adjacent designation. E.g. you can keep cargo that was
-	 * previously reserved (D_LOAD) or you can mark cargo to be transferred
+	 * previously reserved (MTA_LOAD) or you can mark cargo to be transferred
 	 * that was previously marked as to be delivered, but you can't reserve
 	 * cargo that's marked as to be delivered.
 	 */
-	inline void Reassign(uint count, Designation from, Designation to)
+	inline void Reassign(uint count, Action from, Action to)
 	{
 		assert(Delta((int)from, (int)to) == 1);
-		this->designation_counts[from] -= count;
-		this->designation_counts[to] += count;
+		this->action_counts[from] -= count;
+		this->action_counts[to] += count;
 	}
 
 	/**
@@ -334,8 +338,8 @@ public:
 	 */
 	inline void KeepAll()
 	{
-		this->designation_counts[D_DELIVER] = this->designation_counts[D_TRANSFER] = this->designation_counts[D_LOAD] = 0;
-		this->designation_counts[D_KEEP] = this->count;
+		this->action_counts[A_DELIVER] = this->action_counts[A_TRANSFER] = this->action_counts[A_LOAD] = 0;
+		this->action_counts[A_KEEP] = this->count;
 	}
 
 	/**
@@ -349,12 +353,12 @@ public:
 
 	/**
 	 * Returns the amount of cargo designated for a given purpose.
-	 * @param mode Action the cargo is designated for.
+	 * @param action Action the cargo is designated for.
 	 * @return Amount of cargo designated for the given action.
 	 */
-	inline uint DesignationCount(Designation mode) const
+	inline uint ActionCount(Action action) const
 	{
-		return this->designation_counts[mode];
+		return this->action_counts[action];
 	}
 
 	/**
@@ -364,7 +368,7 @@ public:
 	 */
 	inline uint OnboardCount() const
 	{
-		return this->count - this->designation_counts[D_LOAD];
+		return this->count - this->action_counts[A_LOAD];
 	}
 
 	/**
@@ -373,7 +377,7 @@ public:
 	 */
 	inline uint UnloadCount() const
 	{
-		return this->designation_counts[D_TRANSFER] + this->designation_counts[D_DELIVER];
+		return this->action_counts[A_TRANSFER] + this->action_counts[A_DELIVER];
 	}
 
 	/**
@@ -382,7 +386,7 @@ public:
 	 */
 	inline uint RemainingCount() const
 	{
-		return this->designation_counts[D_KEEP] + this->designation_counts[D_LOAD];
+		return this->action_counts[A_KEEP] + this->action_counts[A_LOAD];
 	}
 
 	uint Balance(VehicleCargoList *other, uint share, uint max_move);
