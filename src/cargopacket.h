@@ -29,7 +29,7 @@ typedef Pool<CargoPacket, CargoPacketID, 1024, 0xFFF000, PT_NORMAL, true, false>
 extern CargoPacketPool _cargopacket_pool;
 
 template <class Tinst> class CargoList;
-class StationCargoList; // forward-declare, so we can use it in VehicleCargoList::Unreserve
+class StationCargoList; // forward-declare, so we can use it in VehicleCargoList.
 extern const struct SaveLoad *GetCargoPacketDesc();
 
 /**
@@ -67,7 +67,15 @@ public:
 	void Merge(CargoPacket *cp);
 	void Reduce(uint count);
 
+	/**
+	 * Sets the tile where the packet was loaded last.
+	 * @param load_place Tile where the packet was loaded last.
+	 */
 	void SetLoadPlace(TileIndex load_place) { this->loaded_at_xy = load_place; }
+	/**
+	 * Adds some feeder share to the packet.
+	 * @param new_share Feeder share to be added.
+	 */
 	void AddFeederShare(Money new_share) { this->feeder_share += new_share; }
 
 	/**
@@ -164,8 +172,6 @@ public:
  */
 #define FOR_ALL_CARGOPACKETS(var) FOR_ALL_CARGOPACKETS_FROM(var, 0)
 
-class MoveAction;
-
 /**
  * Simple collection class for a list of cargo packets.
  * @tparam Tinst Actual instantiation of this cargo list.
@@ -253,6 +259,7 @@ public:
 		return this->count == 0 ? 0 : this->cargo_days_in_transit / this->count;
 	}
 
+
 	void Append(CargoPacket *cp);
 	void Truncate(uint max_remaining);
 
@@ -284,6 +291,9 @@ protected:
 	void AddToCache(const CargoPacket *cp);
 	void RemoveFromCache(const CargoPacket *cp, uint count);
 
+	/**
+	 * Assert that the designation counts add up.
+	 */
 	inline void AssertCountConsistence() const
 	{
 		assert(this->designation_counts[D_KEEP] +
@@ -303,12 +313,25 @@ public:
 	void RemoveFromMeta(const CargoPacket *cp, Designation mode, uint count);
 	void AddToMeta(const CargoPacket *cp, Designation mode);
 
+	/**
+	 * Moves some cargo from one designation to another. You can only move
+	 * between adjacent designation. E.g. you can keep cargo that was
+	 * previously reserved (D_LOAD) or you can mark cargo to be transferred
+	 * that was previously marked as to be delivered, but you can't reserve
+	 * cargo that's marked as to be delivered.
+	 */
 	inline void Reassign(uint count, Designation from, Designation to)
 	{
+		assert(Delta((int)from, (int)to) == 1);
 		this->designation_counts[from] -= count;
 		this->designation_counts[to] += count;
 	}
 
+	/**
+	 * Marks all cargo in the vehicle as to be kept. This is only useful for
+	 * loading old savegames. When loading is aborted the reserved cargo has
+	 * to be returned.
+	 */
 	inline void KeepAll()
 	{
 		this->designation_counts[D_DELIVER] = this->designation_counts[D_TRANSFER] = this->designation_counts[D_LOAD] = 0;
@@ -324,6 +347,11 @@ public:
 		return this->feeder_share;
 	}
 
+	/**
+	 * Returns the amount of cargo designated for a given purpose.
+	 * @param mode Action the cargo is designated for.
+	 * @return Amount of cargo designated for the given action.
+	 */
 	inline uint DesignationCount(Designation mode) const
 	{
 		return this->designation_counts[mode];
@@ -348,6 +376,10 @@ public:
 		return this->designation_counts[D_TRANSFER] + this->designation_counts[D_DELIVER];
 	}
 
+	/**
+	 * Returns the sum of cargo to be kept in the vehicle at the current station.
+	 * @return Cargo to be kept or loaded.
+	 */
 	inline uint RemainingCount() const
 	{
 		return this->designation_counts[D_KEEP] + this->designation_counts[D_LOAD];
@@ -389,7 +421,7 @@ public:
  */
 class StationCargoList : public CargoList<StationCargoList> {
 protected:
-	uint reserved_count;        ///< Amount of cargo being reserved for loading.
+	uint reserved_count; ///< Amount of cargo being reserved for loading.
 
 public:
 	/** The super class ought to know what it's doing. */
@@ -399,7 +431,7 @@ public:
 
 	/**
 	 * Are two the two CargoPackets mergeable in the context of
-	 * a list of CargoPackets for a Vehicle?
+	 * a list of CargoPackets for a station?
 	 * @param cp1 First CargoPacket.
 	 * @param cp2 Second CargoPacket.
 	 * @return True if they are mergeable.
@@ -413,8 +445,8 @@ public:
 	}
 
 	/**
-	 * Returns sum of cargo reserved for the vehicle.
-	 * @return Cargo reserved for the vehicle.
+	 * Returns sum of cargo reserved for loading onto vehicles.
+	 * @return Cargo reserved for loading.
 	 */
 	inline uint ReservedCount() const
 	{
@@ -432,7 +464,7 @@ public:
 	}
 
 	/**
-	 * Return a previously  reserved packet to the station it came from.
+	 * Returns a previously reserved packet to the station it came from.
 	 * @param cp Packet being returned.
 	 */
 	inline void Return(CargoPacket *cp)
@@ -443,7 +475,7 @@ public:
 	}
 
 	/**
-	 * Load some reserved cargo onto the vehicle which had reserved it.
+	 * Loads some reserved cargo onto the vehicle which had reserved it.
 	 * @param move Amount of cargo being loaded.
 	 */
 	inline void LoadReserved(uint move)
@@ -452,12 +484,24 @@ public:
 		this->reserved_count -= move;
 	}
 
+	/**
+	 * Reserves some cargo for loading. It's assumed that the packet has
+	 * already been removed from the list and only the metadata has to be
+	 * updated.
+	 * @param cp Packet being reserved.
+	 */
 	inline void Reserve(CargoPacket *cp)
 	{
 		this->reserved_count += cp->count;
 		this->RemoveFromCache(cp, cp->count);
 	}
 
+	/**
+	 * Load a packet onto a vehicle without reserving it before. It's assumed
+	 * that the packet has already been removed from the list and only the
+	 * cache has to be updated.
+	 * @param cp Packet being loaded.
+	 */
 	inline void Load(CargoPacket *cp)
 	{
 		this->RemoveFromCache(cp, cp->count);
@@ -467,47 +511,62 @@ public:
 	uint Load(VehicleCargoList *dest, uint count, TileIndex load_place);
 };
 
+/** Abstract action for moving cargo from one list to another. */
 template<class Tsource, class Tdest>
 class CargoMovement {
 protected:
-	Tsource *source;
-	Tdest *destination;
-	uint max_move;
+	Tsource *source;    ///< Source of the cargo.
+	Tdest *destination; ///< Destination for the cargo.
+	uint max_move;      ///< Maximum amount of cargo to be moved with this action.
 	CargoPacket *Preprocess(CargoPacket *cp);
 public:
 	CargoMovement(Tsource *source, Tdest *destination, uint max_move) : source(source), destination(destination), max_move(max_move) {}
+
+	/**
+	 * Returns how much more cargo can be moved with this action.
+	 * @return Amount of cargo this action can still move.
+	 */
 	uint MaxMove() { return this->max_move; }
 };
 
+/** Action of final delivery of cargo. */
 class CargoDelivery {
 private:
-	VehicleCargoList *source;
-	CargoPayment *payment;
-	uint max_move;
+	VehicleCargoList *source; ///< Source of the cargo.
+	CargoPayment *payment;    ///< Payment object where payments will be registered.
+	uint max_move;            ///< Maximum amount of cargo to be delivered with this action.
 public:
 	CargoDelivery(VehicleCargoList *source, uint max_move, CargoPayment *payment) : source(source), payment(payment), max_move(max_move) {}
 	bool operator()(CargoPacket *cp);
+
+	/**
+	 * Returns how much more cargo can be delivered with this action.
+	 * @return Amount of cargo this action can still deliver.
+	 */
 	uint MaxMove() { return this->max_move; }
 };
 
+/** Action of transferring cargo from a vehicle to a station. */
 class CargoTransfer : public CargoMovement<VehicleCargoList, StationCargoList> {
 protected:
-	CargoPayment *payment;
+	CargoPayment *payment; ///< Payment object for registering transfer credits.
 public:
 	CargoTransfer(VehicleCargoList *source, StationCargoList *destination, uint max_move, CargoPayment *payment) :
 			CargoMovement<VehicleCargoList, StationCargoList>(source, destination, max_move), payment(payment) {}
 	bool operator()(CargoPacket *cp);
 };
 
+/** Action of loading cargo from a station onto a vehicle. */
 class CargoLoad : public CargoMovement<StationCargoList, VehicleCargoList> {
 protected:
-	TileIndex load_place;
+	TileIndex load_place; ///< TileIndex to be saved in the packets' loaded_at_xy.
 public:
 	CargoLoad(StationCargoList *source, VehicleCargoList *destination, uint max_move, TileIndex load_place) :
 			CargoMovement<StationCargoList, VehicleCargoList>(source, destination, max_move), load_place(load_place) {}
 	bool operator()(CargoPacket *cp);
 };
 
+/** Action of reserving cargo from a station to be loaded onto a vehicle. */
 class CargoReservation : public CargoLoad {
 public:
 	CargoReservation(StationCargoList *source, VehicleCargoList *destination, uint max_move, TileIndex load_place) :
@@ -515,6 +574,7 @@ public:
 	bool operator()(CargoPacket *cp);
 };
 
+/** Action of returning previously reserved cargo from the vehicle to the station. */
 class CargoReturn : public CargoMovement<VehicleCargoList, StationCargoList> {
 public:
 	CargoReturn(VehicleCargoList *source, StationCargoList *destination, uint max_move) :
@@ -522,10 +582,21 @@ public:
 	bool operator()(CargoPacket *cp);
 };
 
+/** Action of shifting cargo from one vehicle to another. */
 class CargoShift : public CargoMovement<VehicleCargoList, VehicleCargoList> {
 public:
 	CargoShift(VehicleCargoList *source, VehicleCargoList *destination, uint max_move) :
 			CargoMovement<VehicleCargoList, VehicleCargoList>(source, destination, max_move) {}
+	bool operator()(CargoPacket *cp);
+};
+
+/** Action of balancing the amounts of reserved cargo between two vehicles. */
+class CargoBalance : public CargoMovement<VehicleCargoList, VehicleCargoList> {
+protected:
+	uint min_move; ///< Minimum amount of cargo to be moved with this action. If that amount has been moved it can stop.
+public:
+	CargoBalance(VehicleCargoList *source, VehicleCargoList *destination, uint max_move, uint min_move) :
+			CargoMovement<VehicleCargoList, VehicleCargoList>(source, destination, max_move), min_move(min_move) {}
 	bool operator()(CargoPacket *cp);
 };
 

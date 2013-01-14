@@ -393,11 +393,11 @@ uint VehicleCargoList::Shift(VehicleCargoList *dest, uint max_move)
 }
 
 /**
- * Shift cargo from the front of the packet list and appy some action to it.
+ * Shift cargo from the front of the packet list and applies some action to it.
  * @param action Action to be applied. It should define
- *               "bool operator()(CargoPacket *)" If true is returned the
+ *               "bool operator()(CargoPacket *)". If true is returned the
  *               cargo packet will be removed from the list. Otherwise it
- * 	             will be kept and the loop will be aborted.
+ *               will be kept and the loop will be aborted.
  */
 template <class Tinst>
 template <class Taction>
@@ -415,9 +415,9 @@ void CargoList<Tinst>::ShiftCargo(Taction action)
 }
 
 /**
- * Pop cargo from the back of the packet list and appy some action to it.
+ * Pops cargo from the back of the packet list and applies some action to it.
  * @param action Action to be applied. It should define
- *               "bool operator()(CargoPacket *)" If false is returned the
+ *               "bool operator()(CargoPacket *)". If true is returned the
  *               cargo packet will be removed from the list. Otherwise it
  *               will be kept and the loop will be aborted.
  */
@@ -474,7 +474,7 @@ void VehicleCargoList::AddToCache(const CargoPacket *cp)
 /**
  * Removes a packet or part of it from the metadata.
  * @param cp Packet to be removed.
- * @param mode Designation of the packet (for updating the counts)
+ * @param mode Designation of the packet (for updating the counts).
  * @param count Amount of cargo to be removed.
  */
 void VehicleCargoList::RemoveFromMeta(const CargoPacket *cp, Designation mode, uint count)
@@ -487,7 +487,7 @@ void VehicleCargoList::RemoveFromMeta(const CargoPacket *cp, Designation mode, u
 
 /**
  * Adds a packet to the metadata.
- * @param cp Packet to be added,
+ * @param cp Packet to be added.
  * @param mode Designation of the packet.
  */
 void VehicleCargoList::AddToMeta(const CargoPacket *cp, Designation mode)
@@ -552,7 +552,7 @@ bool VehicleCargoList::Stage(bool accepted, StationID current_station, uint8 ord
 }
 
 /**
- * Balance the reserved lists by transferring transferring some packets.
+ * Balance the reserved lists by transferring some packets.
  * @param dest Cargo list to balance with.
  * @param share Share of the overall reserved cargo each of the vehicles should get.
  * @param max_move Maximum amount of cargo to be moved.
@@ -561,31 +561,11 @@ uint VehicleCargoList::Balance(VehicleCargoList *dest, uint max_move, uint share
 {
 	/* Move at most as much cargo as needed so that both have the same amount. */
 	max_move = min((this->designation_counts[D_LOAD] - dest->designation_counts[D_LOAD]) / 2, max_move);
-	/* Move at least as much cargo to fill the other vehicle to its share (if possible). */
-	uint min_move = min(share - dest->designation_counts[D_LOAD], max_move);
-	uint moved = 0;
-	ReverseIterator it(this->packets.rbegin());
-	while (it != this->packets.rend() && moved < min_move) {
-		CargoPacket *cp = *it;
-		if (cp->count <= max_move - moved) {
-			this->RemoveFromMeta(cp, D_LOAD, cp->count);
-			this->packets.erase((++it).base());
-			dest->Append(cp, D_LOAD);
-			moved += cp->count;
-		} else if (CargoPacket::CanAllocateItem()) {
-			uint move = max_move - moved;
-			cp->count -= move;
-			CargoPacket *cp_new = new CargoPacket(move, cp->days_in_transit, cp->source, cp->source_xy, cp->loaded_at_xy, 0, cp->source_type, cp->source_id);
-			this->RemoveFromMeta(cp_new, D_LOAD, cp_new->count);
-			dest->Append(cp_new, D_LOAD);
-			moved += move;
-		} else {
-			/* If this actually happens it will desync. There is not much we
-			 * can do when out of memory, though. */
-			break;
-		}
-	}
-	return moved;
+	uint prev_count = this->count;
+	this->PopCargo(CargoBalance(this, dest, max_move,
+			/* Try to move least as much cargo to fill the other vehicle to its share. */
+			min(share - dest->designation_counts[D_LOAD], max_move)));
+	return this->count - prev_count;
 }
 
 /** Invalidates the cached data and rebuild it. */
@@ -628,6 +608,7 @@ bool CargoDelivery::operator()(CargoPacket *cp)
 		delete cp;
 		return true;
 	} else {
+		this->payment->PayFinalDelivery(cp, this->max_move);
 		this->source->RemoveFromMeta(cp, VehicleCargoList::D_DELIVER, this->max_move);
 		cp->Reduce(this->max_move);
 		this->max_move = 0;
@@ -694,12 +675,32 @@ bool CargoTransfer::operator()(CargoPacket *cp)
 	return cp_new == cp;
 }
 
+/**
+ * Shift some cargo from a vehicle to another one.
+ * @param cp Packet to be shifted.
+ * @return True if the packet was completely shifted, false if part of it was.
+ */
 bool CargoShift::operator()(CargoPacket *cp)
 {
 	CargoPacket *cp_new = this->Preprocess(cp);
 	if (cp_new == NULL) cp_new = cp;
 	this->source->RemoveFromMeta(cp_new, VehicleCargoList::D_KEEP, cp_new->Count());
 	this->destination->Append(cp_new, VehicleCargoList::D_KEEP);
+	return cp_new == cp;
+}
+
+/**
+ * Balance reservation between two vehicles.
+ * @param cp Packet to be shifted.
+ * @return True if the packet was completely shifted, false if part or none of it was.
+ */
+bool CargoBalance::operator()(CargoPacket *cp)
+{
+	if (this->min_move == 0) return false;
+	CargoPacket *cp_new = this->Preprocess(cp);
+	this->min_move = cp_new->Count() < this->min_move ? cp_new->Count() - min_move : 0;
+	this->source->RemoveFromMeta(cp_new, VehicleCargoList::D_LOAD, cp->Count());
+	this->destination->Append(cp_new, VehicleCargoList::D_LOAD);
 	return cp_new == cp;
 }
 
