@@ -1278,7 +1278,6 @@ static void ReserveConsist(Station *st, Vehicle *u, CargoArray *consist_capleft)
 		CargoID current_cargo = next_cargo->cargo_type;
 
 		Vehicle *v = next_cargo;
-		Vehicle *last_balance = next_cargo;
 		SetBit(seen_cargos, current_cargo);
 		next_cargo = NULL;
 		for (; v != NULL; v = v->Next()) {
@@ -1287,7 +1286,6 @@ static void ReserveConsist(Station *st, Vehicle *u, CargoArray *consist_capleft)
 				if (next_cargo == NULL && !HasBit(seen_cargos, v->cargo_type)) next_cargo = v;
 				continue;
 			}
-			v->vcache.load_amount = GetLoadAmount(v);
 
 			uint cap = v->cargo_cap - v->cargo.RemainingCount();
 
@@ -1298,28 +1296,6 @@ static void ReserveConsist(Station *st, Vehicle *u, CargoArray *consist_capleft)
 
 			if (consist_capleft != NULL) {
 				(*consist_capleft)[current_cargo] += cap;
-
-				/* Don't balance on autorefit. */
-				continue;
-			}
-
-			if (cap > 0 && v->cargo.ActionCount(VehicleCargoList::A_LOAD) < v->vcache.load_amount) {
-				Vehicle *balance = last_balance;
-				do {
-					if (balance->cargo_type == current_cargo &&
-							balance->cargo.ActionCount(VehicleCargoList::A_LOAD) > balance->vcache.load_amount) {
-						balance->cargo.Balance(&v->cargo,
-								/* Leave at least one full chunk of cargo for balance and move at most cap. */
-								min(cap, balance->cargo.ActionCount(VehicleCargoList::A_LOAD) - balance->vcache.load_amount),
-								/* Try to move at least enough cargo to get one full chunk for v. */
-								v->vcache.load_amount - v->cargo.ActionCount(VehicleCargoList::A_LOAD));
-						last_balance = balance->Next();
-						break;
-					}
-					balance = balance->Next();
-					assert(balance != NULL);
-					if (balance == v) balance = u;
-				} while (balance != last_balance);
 			}
 		}
 	}
@@ -1353,9 +1329,11 @@ static void LoadUnloadVehicle(Vehicle *front)
 	Station *st = Station::Get(last_visited);
 
 	bool use_autorefit = front->current_order.IsRefit() && front->current_order.GetRefitCargo() == CT_AUTO_REFIT;
-	bool reserve = _settings_game.order.improved_load && ((front->current_order.GetLoadType() & OLFB_FULL_LOAD) != 0 || use_autorefit);
 	CargoArray consist_capleft;
-	if (reserve) ReserveConsist(st, front, use_autorefit ? &consist_capleft : NULL);
+	if (_settings_game.order.improved_load &&
+			((front->current_order.GetLoadType() & OLFB_FULL_LOAD) != 0 || use_autorefit)) {
+		ReserveConsist(st, front, (use_autorefit && front->load_unload_ticks != 0) ? &consist_capleft : NULL);
+	}
 
 	/* We have not waited enough time till the next round of loading/unloading */
 	if (front->load_unload_ticks != 0) return;
@@ -1389,7 +1367,7 @@ static void LoadUnloadVehicle(Vehicle *front)
 		if (v->cargo_cap == 0) continue;
 		artic_part++;
 
-		byte load_amount = reserve ? v->vcache.load_amount : GetLoadAmount(v);
+		byte load_amount = GetLoadAmount(v);
 
 		GoodsEntry *ge = &st->goods[v->cargo_type];
 
@@ -1498,8 +1476,8 @@ static void LoadUnloadVehicle(Vehicle *front)
 			/* Add new capacity to consist capacity and reserve cargo */
 			w = v_start;
 			do {
-				consist_capleft[w->cargo_type] += w->cargo_cap;
 				st->goods[w->cargo_type].cargo.Reserve(&w->cargo, w->cargo_cap, st->xy);
+				consist_capleft[w->cargo_type] += w->cargo_cap - w->cargo.Count();
 				w = w->HasArticulatedPart() ? w->GetNextArticulatedPart() : NULL;
 			} while (w != NULL);
 
@@ -1533,12 +1511,11 @@ static void LoadUnloadVehicle(Vehicle *front)
 		/* If there's goods waiting at the station, and the vehicle
 		 * has capacity for it, load it on the vehicle. */
 		int cap_left = v->cargo_cap - v->cargo.OnboardCount();
-		if (cap_left > 0) {
+		if (cap_left > 0 && (v->cargo.ActionCount(VehicleCargoList::A_LOAD > 0) || !ge->cargo.Empty())) {
 			if (_settings_game.order.gradual_loading) cap_left = min(cap_left, load_amount);
-			if (v->cargo.Empty()) TriggerVehicle(v, VEHICLE_TRIGGER_NEW_CARGO);
+			if (v->cargo.OnboardCount() == 0) TriggerVehicle(v, VEHICLE_TRIGGER_NEW_CARGO);
 
-			uint loaded = 0;
-			loaded = ge->cargo.Load(&v->cargo, cap_left, st->xy);
+			uint loaded = ge->cargo.Load(&v->cargo, cap_left, st->xy);
 
 			/* Store whether the maximum possible load amount was loaded or not.*/
 			if (loaded == (uint)cap_left) {

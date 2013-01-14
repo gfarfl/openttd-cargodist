@@ -551,19 +551,6 @@ bool VehicleCargoList::Stage(bool accepted, StationID current_station, uint8 ord
 	return this->action_counts[A_DELIVER] > 0 || this->action_counts[A_TRANSFER] > 0;
 }
 
-/**
- * Balances the reserved lists by transferring some packets. Tries not to split packets.
- * @param dest Cargo list to balance with.
- * @param max_move Maximum amount of cargo to be moved.
- * @param min_move Minimum amount of cargo to be moved.
- */
-uint VehicleCargoList::Balance(VehicleCargoList *dest, uint max_move, uint min_move)
-{
-	uint prev_count = this->count;
-	this->PopCargo(CargoBalance(this, dest, max_move, min_move));
-	return this->count - prev_count;
-}
-
 /** Invalidates the cached data and rebuild it. */
 void VehicleCargoList::InvalidateCache()
 {
@@ -682,21 +669,6 @@ bool CargoShift::operator()(CargoPacket *cp)
 	if (cp_new == NULL) cp_new = cp;
 	this->source->RemoveFromMeta(cp_new, VehicleCargoList::A_KEEP, cp_new->Count());
 	this->destination->Append(cp_new, VehicleCargoList::A_KEEP);
-	return cp_new == cp;
-}
-
-/**
- * Balances reservations between two vehicles.
- * @param cp Packet to be shifted.
- * @return True if the packet was completely shifted, false if part or none of it was.
- */
-bool CargoBalance::operator()(CargoPacket *cp)
-{
-	if (this->min_move == 0) return false;
-	CargoPacket *cp_new = this->Preprocess(cp);
-	this->min_move -= min(cp_new->Count(), this->min_move);
-	this->source->RemoveFromMeta(cp_new, VehicleCargoList::A_LOAD, cp->Count());
-	this->destination->Append(cp_new, VehicleCargoList::A_LOAD);
 	return cp_new == cp;
 }
 

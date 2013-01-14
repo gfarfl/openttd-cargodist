@@ -389,8 +389,6 @@ public:
 		return this->action_counts[A_KEEP] + this->action_counts[A_LOAD];
 	}
 
-	uint Balance(VehicleCargoList *other, uint share, uint max_move);
-
 	uint Return(StationCargoList *dest, uint count = UINT_MAX);
 
 	uint Unload(StationCargoList *dest, uint count, CargoPayment *payment);
@@ -591,16 +589,6 @@ class CargoShift : public CargoMovement<VehicleCargoList, VehicleCargoList> {
 public:
 	CargoShift(VehicleCargoList *source, VehicleCargoList *destination, uint max_move) :
 			CargoMovement<VehicleCargoList, VehicleCargoList>(source, destination, max_move) {}
-	bool operator()(CargoPacket *cp);
-};
-
-/** Action of balancing the amounts of reserved cargo between two vehicles. */
-class CargoBalance : public CargoMovement<VehicleCargoList, VehicleCargoList> {
-protected:
-	uint min_move; ///< Minimum amount of cargo to be moved with this action. If that amount has been moved it can stop.
-public:
-	CargoBalance(VehicleCargoList *source, VehicleCargoList *destination, uint max_move, uint min_move) :
-			CargoMovement<VehicleCargoList, VehicleCargoList>(source, destination, max_move), min_move(min_move) {}
 	bool operator()(CargoPacket *cp);
 };
 
