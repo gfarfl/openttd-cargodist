@@ -295,6 +295,9 @@ protected:
 	void AddToCache(const CargoPacket *cp);
 	void RemoveFromCache(const CargoPacket *cp, uint count);
 
+	void RemoveFromMeta(const CargoPacket *cp, Action action, uint count);
+	void AddToMeta(const CargoPacket *cp, Action action);
+
 	template<class Taction>
 	void ShiftCargo(Taction action);
 
@@ -320,10 +323,12 @@ public:
 	/** The vehicles have a cargo list (and we want that saved). */
 	friend const struct SaveLoad *GetVehicleDescription(VehicleType vt);
 
-	void Append(CargoPacket *cp, Action action = A_KEEP);
+	friend class CargoShift;
+	friend class CargoDelivery;
+	friend class CargoReturn;
+	friend class CargoTransfer;
 
-	void RemoveFromMeta(const CargoPacket *cp, Action action, uint count);
-	void AddToMeta(const CargoPacket *cp, Action action);
+	void Append(CargoPacket *cp, Action action = A_KEEP);
 
 	/**
 	 * Moves some cargo from one designation to another. You can only move
@@ -444,11 +449,21 @@ class StationCargoList : public CargoList<StationCargoList, StationCargoPacketMa
 protected:
 	uint reserved_count; ///< Amount of cargo being reserved for loading.
 
+	template<class Taction>
+	bool ShiftCargo(Taction &action, StationID next);
+
+	template<class Taction>
+	uint ShiftCargo(Taction action, StationID next, bool include_invalid);
+
 public:
 	/** The super class ought to know what it's doing. */
 	friend class CargoList<StationCargoList, StationCargoPacketMap>;
 	/** The stations, via GoodsEntry, have a CargoList. */
 	friend const struct SaveLoad *GetGoodsDesc();
+	friend class CargoReroute;
+	friend class CargoLoad;
+	friend class CargoReservation;
+	friend class CargoReturn;
 
 	/**
 	 * Are two the two CargoPackets mergeable in the context of
@@ -467,15 +482,7 @@ public:
 
 	static void InvalidateAllFrom(SourceType src_type, SourceID src);
 
-	template<class Taction>
-	void ShiftCargo(Taction action, StationID next);
-
-	template<class Taction>
-	void PopCargo(Taction action, StationID next);
-
 	void Append(CargoPacket *cp, StationID next);
-
-	void RerouteStalePackets(StationID to, const GoodsEntry *good);
 
 	/**
 	 * Check for cargo headed for a specific station.
@@ -517,52 +524,27 @@ public:
 		return this->count + this->reserved_count;
 	}
 
-	/**
-	 * Returns a previously reserved packet to the station it came from.
-	 * @param cp Packet being returned.
-	 */
-	inline void Return(CargoPacket *cp, StationID next)
-	{
-		assert(cp->count <= this->reserved_count);
-		this->reserved_count -= cp->count;
-		this->Append(cp, next);
-	}
-
-	/**
-	 * Loads some reserved cargo onto the vehicle which had reserved it.
-	 * @param move Amount of cargo being loaded.
-	 */
-	inline void LoadReserved(uint move)
-	{
-		assert(move <= this->reserved_count);
-		this->reserved_count -= move;
-	}
-
-	/**
-	 * Reserves some cargo for loading. It's assumed that the packet has
-	 * already been removed from the list and only the metadata has to be
-	 * updated.
-	 * @param cp Packet being reserved.
-	 */
-	inline void Reserve(CargoPacket *cp)
-	{
-		this->reserved_count += cp->count;
-		this->RemoveFromCache(cp, cp->count);
-	}
-
-	/**
-	 * Load a packet onto a vehicle without reserving it before. It's assumed
-	 * that the packet has already been removed from the list and only the
-	 * cache has to be updated.
-	 * @param cp Packet being loaded.
-	 */
-	inline void Load(CargoPacket *cp)
-	{
-		this->RemoveFromCache(cp, cp->count);
-	}
-
 	uint Reserve(VehicleCargoList *dest, uint count, TileIndex load_place, StationID next);
 	uint Load(VehicleCargoList *dest, uint count, TileIndex load_place, StationID next);
+	uint Reroute(StationCargoList *dest, uint count, StationID avoid, const GoodsEntry *ge);
+};
+
+/** Action of final delivery of cargo. */
+class CargoDelivery {
+protected:
+	VehicleCargoList *source; ///< Source of the cargo.
+	uint max_move;            ///< Maximum amount of cargo to be delivered with this action.
+	CargoPayment *payment;    ///< Payment object where payments will be registered.
+public:
+	CargoDelivery(VehicleCargoList *source, uint max_move, CargoPayment *payment) :
+			source(source), max_move(max_move), payment(payment) {}
+	bool operator()(CargoPacket *cp);
+
+	/**
+	 * Returns how much more cargo can be delivered with this action.
+	 * @return Amount of cargo this action can still deliver.
+	 */
+	uint MaxMove() { return this->max_move; }
 };
 
 /** Abstract action for moving cargo from one list to another. */
@@ -579,23 +561,6 @@ public:
 	/**
 	 * Returns how much more cargo can be moved with this action.
 	 * @return Amount of cargo this action can still move.
-	 */
-	uint MaxMove() { return this->max_move; }
-};
-
-/** Action of final delivery of cargo. */
-class CargoDelivery {
-private:
-	VehicleCargoList *source; ///< Source of the cargo.
-	CargoPayment *payment;    ///< Payment object where payments will be registered.
-	uint max_move;            ///< Maximum amount of cargo to be delivered with this action.
-public:
-	CargoDelivery(VehicleCargoList *source, uint max_move, CargoPayment *payment) : source(source), payment(payment), max_move(max_move) {}
-	bool operator()(CargoPacket *cp);
-
-	/**
-	 * Returns how much more cargo can be delivered with this action.
-	 * @return Amount of cargo this action can still deliver.
 	 */
 	uint MaxMove() { return this->max_move; }
 };
@@ -643,6 +608,17 @@ class CargoShift : public CargoMovement<VehicleCargoList, VehicleCargoList> {
 public:
 	CargoShift(VehicleCargoList *source, VehicleCargoList *destination, uint max_move) :
 			CargoMovement<VehicleCargoList, VehicleCargoList>(source, destination, max_move) {}
+	bool operator()(CargoPacket *cp);
+};
+
+/** Action of rerouting cargo between different station cargo lists and/or next hops. */
+class CargoReroute : public CargoMovement<StationCargoList, StationCargoList> {
+protected:
+	StationID avoid;
+	const GoodsEntry *ge;
+public:
+	CargoReroute(StationCargoList *source, StationCargoList *dest, uint max_move, StationID avoid, const GoodsEntry *ge) :
+			CargoMovement<StationCargoList, StationCargoList>(source, dest, max_move), avoid(avoid), ge(ge) {}
 	bool operator()(CargoPacket *cp);
 };
 

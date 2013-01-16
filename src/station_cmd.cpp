@@ -3340,11 +3340,11 @@ void Station::RunAverages()
 					++i;
 				} else {
 					DeleteStaleFlows(this->index, goods_index, id);
-					ge->cargo.RerouteStalePackets(id, ge);
+					ge->cargo.Reroute(&ge->cargo, UINT_MAX, id, ge);
 					ge->link_stats.erase(i++);
 				}
 			} else {
-				ge->cargo.RerouteStalePackets(id, ge);
+				ge->cargo.Reroute(&ge->cargo, UINT_MAX, id, ge);
 				ge->link_stats.erase(i++);
 			}
 		}
