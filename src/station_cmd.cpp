@@ -3951,20 +3951,48 @@ uint FlowStat::GetShare(StationID st) const
  * @param excluded StationID not to be selected.
  * @return A station ID from the shares map.
  */
-StationID FlowStat::GetVia(StationID excluded) const
+StationID FlowStat::GetVia(StationID excluded, StationID excluded2) const
 {
 	assert(!this->shares.empty());
 	uint max = (--this->shares.end())->first - 1;
 	SharesMap::const_iterator it = this->shares.upper_bound(RandomRange(max));
 	assert(it != this->shares.end());
-	if (it->second != excluded) return it->second;
+	if (it->second != excluded && it->second != excluded2) return it->second;
+
+	/* We've hit one of the excluded stations.
+	 * Draw another share, from outside its range. */
 
 	uint end = it->first;
-	if (end - 1 == max) return INVALID_STATION; // only one station in the map
 	uint begin = (it == this->shares.begin() ? 0 : (--it)->first);
-	uint rand = RandomRange(max - (end - begin));
-	return (rand < begin) ? this->shares.upper_bound(rand)->second :
-			this->shares.upper_bound(rand + (end - begin))->second;
+	uint interval = end - begin;
+	if (interval > max) return INVALID_STATION; // Only one station in the map.
+	uint new_max = max - interval;
+	uint rand = RandomRange(new_max);
+	SharesMap::const_iterator it2 = (rand < begin) ? this->shares.upper_bound(rand) :
+			this->shares.upper_bound(rand + interval);
+	if (it2->second != excluded && it2->second != excluded2) return it2->second;
+
+	/* We've hit the second excluded station.
+	 * Same as before, only a bit more complicated. */
+
+	uint end2 = it2->first;
+	uint begin2 = (it2 == this->shares.begin() ? 0 : (--it2)->first);
+	uint interval2 = end2 - begin2;
+	if (interval2 > new_max) return INVALID_STATION; // Only the two excluded stations in the map.
+	new_max = new_max - interval;
+	if (begin > begin2) {
+		Swap(begin, begin2);
+		Swap(end, end2);
+	}
+	rand = RandomRange(new_max);
+	if (rand < begin) {
+		return this->shares.upper_bound(rand)->second;
+	} else if (rand < begin2 - interval) {
+		return this->shares.upper_bound(rand + interval)->second;
+	} else {
+		return this->shares.upper_bound(rand + interval + interval2)->second;
+	}
+
 }
 
 /**

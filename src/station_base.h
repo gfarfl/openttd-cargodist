@@ -209,7 +209,7 @@ public:
 		return this->shares.upper_bound(RandomRange((--this->shares.end())->first - 1))->second;
 	}
 
-	StationID GetVia(StationID excluded) const;
+	StationID GetVia(StationID excluded, StationID excluded2 = INVALID_STATION) const;
 
 private:
 	SharesMap shares;  ///< Shares of flow to be sent via specified station (or consumed locally).
@@ -327,14 +327,26 @@ struct GoodsEntry {
 	 * Get the best next hop for a cargo packet from station source, optionally
 	 * excluding a specific next station.
 	 * @param source Source of the packet.
-	 * @param exclude If != INVALID_STATION and this station would be chosen,
-	 * choose the second best one instead.
 	 * @return The chosen next hop or INVALID_STATION if none was found.
 	 */
-	inline StationID GetVia(StationID source, StationID excluded = INVALID_STATION) const
+	inline StationID GetVia(StationID source)
 	{
 		FlowStatMap::const_iterator flow_it(this->flows.find(source));
-		return flow_it != this->flows.end() ? flow_it->second.GetVia(excluded) : INVALID_STATION;
+		return flow_it != this->flows.end() ? flow_it->second.GetVia() : INVALID_STATION;
+	}
+
+	/**
+	 * Get the best next hop for a cargo packet from station source, optionally
+	 * excluding a specific next station.
+	 * @param source Source of the packet.
+	 * @param excluded If this station would be chosen choose the second best one instead.
+	 * @param excluded2 Second station to be excluded, if != INVALID_STATION.
+	 * @return The chosen next hop or INVALID_STATION if none was found.
+	 */
+	inline StationID GetVia(StationID source, StationID excluded, StationID excluded2 = INVALID_STATION) const
+	{
+		FlowStatMap::const_iterator flow_it(this->flows.find(source));
+		return flow_it != this->flows.end() ? flow_it->second.GetVia(excluded, excluded2) : INVALID_STATION;
 	}
 };
 
