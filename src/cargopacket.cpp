@@ -102,6 +102,7 @@ inline CargoPacket *CargoPacket::Split(uint new_size)
  */
 inline void CargoPacket::Reduce(uint count)
 {
+	assert(count < this->count);
 	this->feeder_share = 0;
 	this->count -= count;
 }
@@ -265,11 +266,18 @@ void VehicleCargoList::ShiftCargo(Taction action)
 template <class Taction>
 void VehicleCargoList::PopCargo(Taction action)
 {
-	ReverseIterator it(this->packets.rbegin());
-	while (it != this->packets.rend() && action.MaxMove() > 0) {
+	if (this->packets.empty()) return;
+	Iterator it(--(this->packets.end()));
+	Iterator begin(this->packets.begin());
+	while (action.MaxMove() > 0) {
 		CargoPacket *cp = *it;
 		if (action(cp)) {
-			this->packets.erase((++it).base());
+			if (it != begin) {
+				this->packets.erase(it--);
+			} else {
+				this->packets.erase(it);
+				break;
+			}
 		} else {
 			break;
 		}
@@ -316,6 +324,7 @@ void VehicleCargoList::AddToCache(const CargoPacket *cp)
  */
 void VehicleCargoList::Append(CargoPacket *cp, Action action)
 {
+	this->AssertCountConsistence();
 	assert(cp != NULL);
 	assert(action == A_LOAD ||
 			(action == A_KEEP && this->action_counts[A_LOAD] == 0));
@@ -323,6 +332,7 @@ void VehicleCargoList::Append(CargoPacket *cp, Action action)
 
 	if (this->count == cp->count) {
 		this->packets.push_back(cp);
+		this->AssertCountConsistence();
 		return;
 	}
 
@@ -333,6 +343,7 @@ void VehicleCargoList::Append(CargoPacket *cp, Action action)
 		sum += icp->count;
 		if (sum >= this->action_counts[action]) {
 			this->packets.push_back(cp);
+			this->AssertCountConsistence();
 			return;
 		}
 	}
@@ -447,6 +458,7 @@ void VehicleCargoList::AgeCargo()
 		if (cp->days_in_transit == 0xFF) continue;
 
 		cp->days_in_transit++;
+		assert(cp->count <= this->count);
 		this->cargo_days_in_transit += cp->count;
 	}
 }
@@ -476,6 +488,7 @@ bool VehicleCargoList::Stage(bool accepted, StationID current_station, StationID
 	bool force_keep = (order_flags & OUFB_NO_UNLOAD) != 0;
 	bool force_unload = (order_flags & OUFB_UNLOAD) != 0;
 	bool force_transfer = (order_flags & (OUFB_TRANSFER || OUFB_UNLOAD)) != 0;
+	assert(this->count > 0 || it == this->packets.end());
 	while (sum < this->count) {
 		CargoPacket *cp = *it;
 
@@ -551,7 +564,7 @@ template <class Taction>
 bool StationCargoList::ShiftCargo(Taction &action, StationID next)
 {
 	std::pair<Iterator, Iterator> range(this->packets.equal_range(next));
-	for (Iterator it(range.first); it != range.second && it.GetKey() == next;) {
+	for (Iterator it(range.first); action.MaxMove() > 0 && it != range.second && it.GetKey() == next;) {
 		CargoPacket *cp = *it;
 		if (action(cp)) {
 			it = this->packets.erase(it);
@@ -708,7 +721,8 @@ CargoPacket *CargoMovement<Tsource, Tdest>::Preprocess(CargoPacket *cp)
 }
 
 /**
- * Determines the amount of cargo to be removed from a packet.
+ * Determines the amount of cargo to be removed from a packet and removes that
+ * from the metadata.
  * @param cp Packet to be removed completely or partially.
  * @param action Action the packet is scheduled for.
  * @return Amount of cargo to be removed.
@@ -722,7 +736,6 @@ uint CargoRemoval::Preprocess(CargoPacket *cp, VehicleCargoList::Action action)
 	} else {
 		uint ret = this->max_move;
 		this->source->RemoveFromMeta(cp, action, ret);
-		cp->Reduce(ret);
 		this->max_move = 0;
 		return ret;
 	}
@@ -844,13 +857,17 @@ bool CargoReroute::operator()(CargoPacket *cp)
 {
 	CargoPacket *cp_new = this->Preprocess(cp);
 	if (cp_new == NULL) cp_new = cp;
-	StationID next = this->ge->GetVia(cp->SourceStation(), this->avoid);
+	StationID next = this->ge->GetVia(cp_new->SourceStation(), this->avoid);
 	assert(next != this->avoid);
+	if (this->source != this->destination) {
+		this->source->RemoveFromCache(cp_new, cp_new->Count());
+		this->destination->AddToCache(cp_new);
+	}
 
 	/* Legal, as insert doesn't invalidate iterators in the MultiMap, however
 	 * this might insert the packet between range.first and range.second (which might be end())
 	 * This is why we check for GetKey above to avoid infinite loops. */
-	this->destination->packets.Insert(next, cp);
+	this->destination->packets.Insert(next, cp_new);
 	return cp_new == cp;
 }
 
