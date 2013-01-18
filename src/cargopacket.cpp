@@ -472,53 +472,69 @@ void VehicleCargoList::AgeCargo()
  * chunks.
  * @param accepted If the cargo will be accepted at the station.
  * @param current_station ID of the station.
+ * @param next_station ID of the station the vehicle will go to next.
  * @param order_flags OrderUnloadFlags that will apply to the unload operation.
+ * @param ge GoodsEntry for getting the flows.
+ * @param payment Payment object for registering transfers.
  * return If any cargo will be unloaded.
  */
-bool VehicleCargoList::Stage(bool accepted, StationID current_station/*, StationID next_station*/, uint8 order_flags, const GoodsEntry *ge, CargoPayment *payment)
+bool VehicleCargoList::Stage(bool accepted, StationID current_station, StationID next_station, uint8 order_flags, const GoodsEntry *ge, CargoPayment *payment)
 {
-	//TODO: finish this
-	/*this->AssertCountConsistence();
+	this->AssertCountConsistence();
 	assert(this->action_counts[A_LOAD] == 0);
 	this->action_counts[A_TRANSFER] = this->action_counts[A_DELIVER] = this->action_counts[A_KEEP] = 0;
 	Iterator deliver = this->packets.end();
 	Iterator it = this->packets.begin();
 	uint sum = 0;
+
+	bool force_keep = (order_flags & OUFB_NO_UNLOAD) != 0;
+	bool force_unload = (order_flags & OUFB_UNLOAD) != 0;
+	bool force_transfer = (order_flags & (OUFB_TRANSFER || OUFB_UNLOAD)) != 0;
 	while (sum < this->count) {
 		CargoPacket *cp = *it;
+
 		this->packets.erase(it++);
 		StationID cargo_next = INVALID_STATION;
-		if ((order_flags & OUFB_TRANSFER) != 0 || (!accepted && (order_flags & OUFB_UNLOAD) != 0)) {
-			this->packets.push_front(cp);
-			cp->feeder_share += payment->PayTransfer(cp, cp->count);
-			cp->next_station = ge->GetVia(cp->source, current_station);
-			this->action_counts[A_TRANSFER] += cp->count;
-		} else if (accepted && current_station != cp->source && (order_flags & OUFB_NO_UNLOAD) == 0) {
-			cargo_next = ge->GetVia(cp->source);
-		}
-			switch (cargo_next) {
-				case current_station:
-					this->packets.insert(deliver, cp);
-					this->action_counts[A_DELIVER] += cp->count;
-					break;
-				case next_station:
-					this->packets.push_back(cp);
-					if (deliver == this->packets.end()) --deliver;
-					this->action_counts[A_KEEP] += cp->count;
-				default:
-					this->packets.push_front(cp);
-					cp->feeder_share += payment->PayTransfer(cp, cp->count);
-					cp->next_station = cargo_next;
-					this->action_counts[A_TRANSFER] += cp->count;
-			}
+		Action action = A_LOAD;
+		if (force_keep) {
+			action = A_KEEP;
+		} else if (force_unload && accepted && cp->source != current_station) {
+			action = A_DELIVER;
+		} else if (force_transfer) {
+			action = A_TRANSFER;
+			cargo_next = ge->GetVia(cp->source, current_station, next_station);
 		} else {
-			this->packets.push_back(cp);
-			if (deliver == this->packets.end()) --deliver;
-			this->action_counts[A_KEEP] += cp->count;
+			cargo_next = ge->GetVia(cp->source);
+			if (cargo_next == INVALID_STATION) {
+				action = (accepted && cp->source != current_station) ? A_DELIVER : A_KEEP;
+			} else if (cargo_next == current_station) {
+				action = A_DELIVER;
+			} else if (cargo_next == next_station) {
+				action = A_KEEP;
+			} else {
+				action = A_TRANSFER;
+			}
 		}
+		switch (action) {
+			case A_KEEP:
+				this->packets.push_back(cp);
+				if (deliver == this->packets.end()) --deliver;
+				break;
+			case A_DELIVER:
+				this->packets.insert(deliver, cp);
+				break;
+			case A_TRANSFER:
+				this->packets.push_front(cp);
+				cp->feeder_share += payment->PayTransfer(cp, cp->count);
+				cp->next_station = cargo_next;
+				break;
+			default:
+				NOT_REACHED();
+		}
+		this->action_counts[action] += cp->count;
 		sum += cp->count;
 	}
-	this->AssertCountConsistence();*/
+	this->AssertCountConsistence();
 	return this->action_counts[A_DELIVER] > 0 || this->action_counts[A_TRANSFER] > 0;
 }
 
@@ -764,8 +780,6 @@ bool CargoTransfer::operator()(CargoPacket *cp)
 	CargoPacket *cp_new = this->Preprocess(cp);
 	if (cp_new == NULL) return false;
 	this->source->RemoveFromMeta(cp_new, VehicleCargoList::A_TRANSFER, cp_new->Count());
-	//TODO: do this in Stage()
-	//cp_new->AddFeederShare(payment->PayTransfer(cp_new, cp_new->Count()));
 	this->destination->Append(cp_new, cp_new->NextStation());
 	return cp_new == cp;
 }

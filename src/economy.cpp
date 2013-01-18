@@ -1216,6 +1216,7 @@ void PrepareUnload(Vehicle *front_v)
 	assert(CargoPayment::CanAllocateItem());
 	front_v->cargo_payment = new CargoPayment(front_v);
 
+	StationID next_station = front_v->GetNextStoppingStation();
 	if (front_v->orders.list == NULL || (front_v->current_order.GetUnloadType() & OUFB_NO_UNLOAD) == 0) {
 		Station *st = Station::Get(front_v->last_station_visited);
 		for (Vehicle *v = front_v; v != NULL; v = v->Next()) {
@@ -1223,9 +1224,9 @@ void PrepareUnload(Vehicle *front_v)
 			if (v->cargo_cap > 0 && !v->cargo.Empty()) {
 				v->cargo.Stage(
 						HasBit(ge->acceptance_pickup, GoodsEntry::GES_ACCEPTANCE),
-						front_v->last_station_visited,
-						front_v->current_order.GetUnloadType(),
-						ge, front_v->cargo_payment);
+						front_v->last_station_visited, next_station,
+						front_v->current_order.GetUnloadType(), ge,
+						front_v->cargo_payment);
 				SetBit(v->vehicle_flags, VF_CARGO_UNLOADING);
 			}
 		}

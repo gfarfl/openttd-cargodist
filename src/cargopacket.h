@@ -419,7 +419,7 @@ public:
 
 	void AgeCargo();
 
-	bool Stage(bool accepted, StationID current_station, uint8 order_flags, const GoodsEntry *ge, CargoPayment *payment);
+	bool Stage(bool accepted, StationID current_station, StationID next_station, uint8 order_flags, const GoodsEntry *ge, CargoPayment *payment);
 
 	void InvalidateCache();
 
