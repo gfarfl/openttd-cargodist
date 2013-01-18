@@ -259,8 +259,6 @@ public:
 		return this->count == 0 ? 0 : this->cargo_days_in_transit / this->count;
 	}
 
-	void Truncate(uint max_remaining);
-
 	void InvalidateCache();
 };
 
@@ -316,8 +314,6 @@ protected:
 	}
 
 public:
-	/** The station cargo list needs to control the unloading. */
-	friend class StationCargoList;
 	/** The super class ought to know what it's doing. */
 	friend class CargoList<VehicleCargoList, CargoPacketList>;
 	/** The vehicles have a cargo list (and we want that saved). */
@@ -327,6 +323,7 @@ public:
 	friend class CargoDelivery;
 	friend class CargoReturn;
 	friend class CargoTransfer;
+	friend class CargoRemoval;
 
 	void Append(CargoPacket *cp, Action action = A_KEEP);
 
@@ -345,9 +342,9 @@ public:
 	}
 
 	/**
-	 * Marks all cargo in the vehicle as to be kept. This is only useful for
+	 * Marks all cargo in the vehicle as to be kept. This is mostly useful for
 	 * loading old savegames. When loading is aborted the reserved cargo has
-	 * to be returned.
+	 * to be returned first.
 	 */
 	inline void KeepAll()
 	{
@@ -411,11 +408,15 @@ public:
 		return this->action_counts[A_KEEP] + this->action_counts[A_LOAD];
 	}
 
+	void SetTransferLoadPlace(TileIndex xy);
+
 	uint Return(StationCargoList *dest, uint count, StationID next_station);
 
 	uint Unload(StationCargoList *dest, uint count, CargoPayment *payment);
 
 	uint Shift(VehicleCargoList *dest, uint count);
+
+	uint Truncate(uint max_move = UINT_MAX);
 
 	void AgeCargo();
 
@@ -494,8 +495,6 @@ public:
 		return this->packets.find(next) != this->packets.end();
 	}
 
-	void RandomTruncate(uint max_remaining);
-
 	/**
 	 * Returns source of the first cargo packet in this list.
 	 * @return The before mentioned source.
@@ -527,24 +526,36 @@ public:
 	uint Reserve(VehicleCargoList *dest, uint count, TileIndex load_place, StationID next);
 	uint Load(VehicleCargoList *dest, uint count, TileIndex load_place, StationID next);
 	uint Reroute(StationCargoList *dest, uint count, StationID avoid, const GoodsEntry *ge);
+	uint Truncate(uint max_move = UINT_MAX);
 };
 
-/** Action of final delivery of cargo. */
-class CargoDelivery {
+/** Action of removing cargo from a vehicle. */
+class CargoRemoval {
 protected:
 	VehicleCargoList *source; ///< Source of the cargo.
-	uint max_move;            ///< Maximum amount of cargo to be delivered with this action.
-	CargoPayment *payment;    ///< Payment object where payments will be registered.
+	uint max_move;            ///< Maximum amount of cargo to be removed with this action.
+
+	uint Preprocess(CargoPacket *cp, VehicleCargoList::Action action);
 public:
-	CargoDelivery(VehicleCargoList *source, uint max_move, CargoPayment *payment) :
-			source(source), max_move(max_move), payment(payment) {}
+	CargoRemoval(VehicleCargoList *source, uint max_move) :
+			source(source), max_move(max_move) {}
 	bool operator()(CargoPacket *cp);
 
 	/**
-	 * Returns how much more cargo can be delivered with this action.
-	 * @return Amount of cargo this action can still deliver.
+	 * Returns how much more cargo can be removed with this action.
+	 * @return Amount of cargo this action can still remove.
 	 */
 	uint MaxMove() { return this->max_move; }
+};
+
+/** Action of final delivery of cargo. */
+class CargoDelivery : public CargoRemoval {
+protected:
+	CargoPayment *payment;    ///< Payment object where payments will be registered.
+public:
+	CargoDelivery(VehicleCargoList *source, uint max_move, CargoPayment *payment) :
+			CargoRemoval(source, max_move), payment(payment) {}
+	bool operator()(CargoPacket *cp);
 };
 
 /** Abstract action for moving cargo from one list to another. */

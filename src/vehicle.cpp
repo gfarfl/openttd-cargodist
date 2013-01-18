@@ -770,7 +770,7 @@ void Vehicle::PreDestructor()
 	}
 	InvalidateWindowClassesData(GetWindowClassForVehicleType(this->type), 0);
 
-	this->cargo.Truncate(0);
+	this->cargo.Truncate();
 	DeleteVehicleOrders(this);
 	DeleteDepotHighlightOfVehicle(this);
 
@@ -1987,7 +1987,8 @@ void Vehicle::BeginLoading()
 }
 
 /**
- * Return all reserved cargo packets to the station.
+ * Return all reserved cargo packets to the station and reset all packets
+ * staged for transfer.
  * @param st the station where the reserved packets should go.
  */
 void Vehicle::CancelReservation(StationID next, Station *st)
@@ -1997,6 +1998,8 @@ void Vehicle::CancelReservation(StationID next, Station *st)
 		if (cargo.ActionCount(VehicleCargoList::A_LOAD) > 0) {
 			DEBUG(misc, 1, "cancelling cargo reservation");
 			cargo.Return(&st->goods[v->cargo_type].cargo, UINT_MAX, next);
+			cargo.SetTransferLoadPlace(st->xy);
+			cargo.KeepAll();
 		}
 	}
 }

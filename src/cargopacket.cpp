@@ -196,38 +196,6 @@ void CargoList<Tinst, Tcont>::AddToCache(const CargoPacket *cp)
 }
 
 /**
- * Truncates the cargo in this list to the given amount. It leaves the
- * first count cargo entities and removes the rest.
- * @param max_remaining Maximum amount of entities to be in the list after the command.
- */
-template <class Tinst, class Tcont>
-void CargoList<Tinst, Tcont>::Truncate(uint max_remaining)
-{
-	for (Iterator it(packets.begin()); it != packets.end(); /* done during loop*/) {
-		CargoPacket *cp = *it;
-		if (max_remaining == 0) {
-			/* Nothing should remain, just remove the packets. */
-			it = this->packets.erase(it);
-			static_cast<Tinst *>(this)->RemoveFromCache(cp, cp->count);
-			delete cp;
-			continue;
-		}
-
-		uint local_count = cp->count;
-		if (local_count > max_remaining) {
-			uint diff = local_count - max_remaining;
-			this->count -= diff;
-			this->cargo_days_in_transit -= cp->days_in_transit * diff;
-			cp->count = max_remaining;
-			max_remaining = 0;
-		} else {
-			max_remaining -= local_count;
-		}
-		++it;
-	}
-}
-
-/**
  * Invalidates the cached data and rebuilds it.
  */
 template <class Tinst, class Tcont>
@@ -424,6 +392,24 @@ uint VehicleCargoList::Shift(VehicleCargoList *dest, uint max_move)
 }
 
 /**
+ * Truncates the cargo in this list by the given amount. It leaves the
+ * first count cargo entities and removes the rest. You can only do that if no
+ * cargo is scheduled for loading or unloading.
+ * @param max_remaining Maximum amount of entities to be in the list after the command.
+ * @return Amount of cargo actually removed.
+ * @pre this->count == this->action_counts[A_KEEP]
+ */
+uint VehicleCargoList::Truncate(uint max_move)
+{
+	assert(this->action_counts[A_KEEP] == this->count);
+	this->AssertCountConsistence();
+	max_move = max(this->count, max_move);
+	this->PopCargo(CargoRemoval(this, max_move));
+	this->AssertCountConsistence();
+	return max_move;
+}
+
+/**
  * Removes a packet or part of it from the metadata.
  * @param cp Packet to be removed.
  * @param action MoveToAction of the packet (for updating the counts).
@@ -538,6 +524,23 @@ bool VehicleCargoList::Stage(bool accepted, StationID current_station, StationID
 	return this->action_counts[A_DELIVER] > 0 || this->action_counts[A_TRANSFER] > 0;
 }
 
+/**
+ * Set loaded_at_xy to the current station for all cargo to be transfered. This
+ * can be done when stopping or skipping while the vehicle is unloading. In
+ * that case the vehicle will get part of its transfer credits early and it may
+ * get more transfer credits than it's entitled to.
+ * @param xy New loaded_at_xy for the cargo.
+ */
+void VehicleCargoList::SetTransferLoadPlace(TileIndex xy)
+{
+	uint sum = 0;
+	for (Iterator it = this->packets.begin(); sum < this->action_counts[A_TRANSFER]; ++it) {
+		CargoPacket *cp = *it;
+		cp->loaded_at_xy = xy;
+		sum += cp->count;
+	}
+}
+
 /*
  *
  * Station cargo list implementation
@@ -642,31 +645,35 @@ uint StationCargoList::Reroute(StationCargoList *dest, uint max_move, StationID 
 /**
  * Truncate where each destination loses roughly the same percentage of its cargo.
  * This is done by randomizing the selection of packets to be removed.
- * @param max_remaining maximum amount of cargo to keep in the list.
+ * @param max_move Maximum amount of cargo to remove from the list.
+ * @return Amount of cargo actually removed.
  */
-void StationCargoList::RandomTruncate(uint max_remaining)
+uint StationCargoList::Truncate(uint max_move)
 {
+	max_move = min(max_move, this->count);
 	uint prev_count = this->count;
-	while (this->count > max_remaining) {
+	uint moved = 0;
+	while (max_move > moved) {
 		for (Iterator it(this->packets.begin()); it != this->packets.end();) {
-			if (RandomRange(prev_count) < max_remaining) {
+			if (RandomRange(prev_count) < prev_count - max_move) {
 				++it;
 				continue;
 			}
-			CargoPacket *packet = *it;
-			uint diff = this->count - max_remaining;
-			if (packet->count > diff) {
-				packet->count -= diff;
-				this->count = max_remaining;
-				this->cargo_days_in_transit -= packet->days_in_transit * diff;
-				return;
+			CargoPacket *cp = *it;
+			uint diff = max_move - moved;
+			if (cp->count > diff) {
+				this->RemoveFromCache(cp, diff);
+				cp->Reduce(diff);
+				return moved + diff;
 			} else {
 				it = this->packets.erase(it);
-				this->RemoveFromCache(packet, packet->count);
-				delete packet;
+				moved += cp->count;
+				this->RemoveFromCache(cp, cp->count);
+				delete cp;
 			}
 		}
 	}
+	return moved;
 }
 
 /** Invalidates the cached data and rebuild it. */
@@ -701,6 +708,45 @@ CargoPacket *CargoMovement<Tsource, Tdest>::Preprocess(CargoPacket *cp)
 }
 
 /**
+ * Determines the amount of cargo to be removed from a packet.
+ * @param cp Packet to be removed completely or partially.
+ * @param action Action the packet is scheduled for.
+ * @return Amount of cargo to be removed.
+ */
+uint CargoRemoval::Preprocess(CargoPacket *cp, VehicleCargoList::Action action)
+{
+	if (this->max_move >= cp->Count()) {
+		this->max_move -= cp->Count();
+		this->source->RemoveFromMeta(cp, action, cp->Count());
+		return cp->Count();
+	} else {
+		uint ret = this->max_move;
+		this->source->RemoveFromMeta(cp, action, ret);
+		cp->Reduce(ret);
+		this->max_move = 0;
+		return ret;
+	}
+}
+
+/**
+ * Removes some cargo.
+ * @param cp Packet to be delivered.
+ * @return True if the packet was completely delivered, false if only part of
+ *         it was.
+ */
+bool CargoRemoval::operator()(CargoPacket *cp)
+{
+	uint remove = this->Preprocess(cp, VehicleCargoList::A_KEEP);
+	if (remove == cp->Count()) {
+		delete cp;
+		return true;
+	} else {
+		cp->Reduce(remove);
+		return false;
+	}
+}
+
+/**
  * Delivers some cargo.
  * @param cp Packet to be delivered.
  * @return True if the packet was completely delivered, false if only part of
@@ -708,17 +754,13 @@ CargoPacket *CargoMovement<Tsource, Tdest>::Preprocess(CargoPacket *cp)
  */
 bool CargoDelivery::operator()(CargoPacket *cp)
 {
-	if (this->max_move >= cp->Count()) {
-		this->payment->PayFinalDelivery(cp, cp->Count());
-		this->max_move -= cp->Count();
-		this->source->RemoveFromMeta(cp, VehicleCargoList::A_DELIVER, cp->Count());
+	uint remove = this->Preprocess(cp, VehicleCargoList::A_DELIVER);
+	this->payment->PayFinalDelivery(cp, remove);
+	if (remove == cp->Count()) {
 		delete cp;
 		return true;
 	} else {
-		this->payment->PayFinalDelivery(cp, this->max_move);
-		this->source->RemoveFromMeta(cp, VehicleCargoList::A_DELIVER, this->max_move);
-		cp->Reduce(this->max_move);
-		this->max_move = 0;
+		cp->Reduce(remove);
 		return false;
 	}
 }
