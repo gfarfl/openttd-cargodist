@@ -323,7 +323,7 @@ public:
 	friend class CargoDelivery;
 	friend class CargoReturn;
 	friend class CargoTransfer;
-	friend class CargoRemoval;
+	friend class VehicleCargoTruncation;
 
 	void Append(CargoPacket *cp, Action action = A_KEEP);
 
@@ -465,6 +465,7 @@ public:
 	friend class CargoLoad;
 	friend class CargoReservation;
 	friend class CargoReturn;
+	friend class StationCargoTruncation;
 
 	/**
 	 * Are two the two CargoPackets mergeable in the context of
@@ -529,33 +530,59 @@ public:
 	uint Truncate(uint max_move = UINT_MAX);
 };
 
-/** Action of removing cargo from a vehicle. */
+/** Action of removing cargo from a vehicle or a station. */
+template<class Tinst, class Tsource>
 class CargoRemoval {
 protected:
-	VehicleCargoList *source; ///< Source of the cargo.
-	uint max_move;            ///< Maximum amount of cargo to be removed with this action.
-
-	uint Preprocess(CargoPacket *cp, VehicleCargoList::Action action);
+	Tsource *source; ///< Source of the cargo.
+	uint max_move;   ///< Maximum amount of cargo to be removed with this action.
+	uint Preprocess(CargoPacket *cp);
+	bool PostProcess(CargoPacket *cp, uint remove);
 public:
-	CargoRemoval(VehicleCargoList *source, uint max_move) :
-			source(source), max_move(max_move) {}
-	bool operator()(CargoPacket *cp);
+	CargoRemoval(Tsource *source, uint max_move) : source(source), max_move(max_move) {}
 
 	/**
 	 * Returns how much more cargo can be removed with this action.
 	 * @return Amount of cargo this action can still remove.
 	 */
 	uint MaxMove() { return this->max_move; }
+
+	/**
+	 * Removes some cargo.
+	 * @param cp Packet to be removed.
+	 * @return True if the packet was completely delivered, false if only part of
+	 *         it was.
+	 */
+	inline bool operator()(CargoPacket *cp) { return this->PostProcess(cp, this->Preprocess(cp)); }
+};
+
+class StationCargoTruncation : public CargoRemoval<StationCargoTruncation, StationCargoList> {
+	inline void RemoveFromMeta(CargoPacket *cp, uint count) { this->source->RemoveFromCache(cp, count); }
+public:
+	friend class CargoRemoval<StationCargoTruncation, StationCargoList>;
+	StationCargoTruncation(StationCargoList *source, uint max_move) :
+			CargoRemoval<StationCargoTruncation, StationCargoList>(source, max_move) {}
 };
 
 /** Action of final delivery of cargo. */
-class CargoDelivery : public CargoRemoval {
+class CargoDelivery : public CargoRemoval<CargoDelivery, VehicleCargoList> {
 protected:
 	CargoPayment *payment;    ///< Payment object where payments will be registered.
+	inline void RemoveFromMeta(CargoPacket *cp, uint count) { this->source->RemoveFromMeta(cp, VehicleCargoList::A_DELIVER, count); }
 public:
+	friend class CargoRemoval<CargoDelivery, VehicleCargoList>;
 	CargoDelivery(VehicleCargoList *source, uint max_move, CargoPayment *payment) :
-			CargoRemoval(source, max_move), payment(payment) {}
+			CargoRemoval<CargoDelivery, VehicleCargoList>(source, max_move), payment(payment) {}
 	bool operator()(CargoPacket *cp);
+};
+
+class VehicleCargoTruncation : public CargoRemoval<VehicleCargoTruncation, VehicleCargoList> {
+protected:
+	inline void RemoveFromMeta(CargoPacket *cp, uint count) { this->source->RemoveFromMeta(cp, VehicleCargoList::A_KEEP, count); }
+public:
+	friend class CargoRemoval<VehicleCargoTruncation, VehicleCargoList>;
+	VehicleCargoTruncation(VehicleCargoList *source, uint max_move) :
+			CargoRemoval<VehicleCargoTruncation, VehicleCargoList>(source, max_move) {}
 };
 
 /** Abstract action for moving cargo from one list to another. */

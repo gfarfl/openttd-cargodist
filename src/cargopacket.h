@@ -310,6 +310,12 @@ public:
 	/** The vehicles have a cargo list (and we want that saved). */
 	friend const struct SaveLoad *GetVehicleDescription(VehicleType vt);
 
+	friend class CargoShift;
+	friend class CargoDelivery;
+	friend class CargoReturn;
+	friend class CargoTransfer;
+	friend class VehicleCargoTruncation;
+
 	void Append(CargoPacket *cp, Action action = A_KEEP);
 
 	void RemoveFromMeta(const CargoPacket *cp, Action action, uint count);
@@ -330,9 +336,9 @@ public:
 	}
 
 	/**
-	 * Marks all cargo in the vehicle as to be kept. This is only useful for
+	 * Marks all cargo in the vehicle as to be kept. This is mostly useful for
 	 * loading old savegames. When loading is aborted the reserved cargo has
-	 * to be returned.
+	 * to be returned first.
 	 */
 	inline void KeepAll()
 	{
@@ -431,6 +437,12 @@ public:
 	/** The stations, via GoodsEntry, have a CargoList. */
 	friend const struct SaveLoad *GetGoodsDesc();
 
+	friend class CargoReroute;
+	friend class CargoLoad;
+	friend class CargoReservation;
+	friend class CargoReturn;
+	friend class StationCargoTruncation;
+
 	/**
 	 * Are two the two CargoPackets mergeable in the context of
 	 * a list of CargoPackets for a station?
@@ -514,7 +526,72 @@ public:
 	uint Truncate(uint max_move = UINT_MAX);
 };
 
-/** Abstract action for moving cargo from one list to another. */
+/**
+ * Abstract action of removing cargo from a vehicle or a station.
+ * @tparam Tinst Actual instantiation of this action.
+ * @tparam Tsource CargoList subclass to remove cargo from.
+ */
+template<class Tinst, class Tsource>
+class CargoRemoval {
+protected:
+	Tsource *source; ///< Source of the cargo.
+	uint max_move;   ///< Maximum amount of cargo to be removed with this action.
+	uint Preprocess(CargoPacket *cp);
+	bool PostProcess(CargoPacket *cp, uint remove);
+public:
+	CargoRemoval(Tsource *source, uint max_move) : source(source), max_move(max_move) {}
+
+	/**
+	 * Returns how much more cargo can be removed with this action.
+	 * @return Amount of cargo this action can still remove.
+	 */
+	uint MaxMove() { return this->max_move; }
+
+	/**
+	 * Removes some cargo.
+	 * @param cp Packet to be removed.
+	 * @return True if the packet was completely delivered, false if only part of
+	 *         it was.
+	 */
+	inline bool operator()(CargoPacket *cp) { return this->PostProcess(cp, this->Preprocess(cp)); }
+};
+
+/** Action of truncating a station cargo list. */
+class StationCargoTruncation : public CargoRemoval<StationCargoTruncation, StationCargoList> {
+	inline void RemoveFromMeta(CargoPacket *cp, uint count) { this->source->RemoveFromCache(cp, count); }
+public:
+	friend class CargoRemoval<StationCargoTruncation, StationCargoList>;
+	StationCargoTruncation(StationCargoList *source, uint max_move) :
+			CargoRemoval<StationCargoTruncation, StationCargoList>(source, max_move) {}
+};
+
+/** Action of final delivery of cargo. */
+class CargoDelivery : public CargoRemoval<CargoDelivery, VehicleCargoList> {
+protected:
+	CargoPayment *payment;    ///< Payment object where payments will be registered.
+	inline void RemoveFromMeta(CargoPacket *cp, uint count) { this->source->RemoveFromMeta(cp, VehicleCargoList::A_DELIVER, count); }
+public:
+	friend class CargoRemoval<CargoDelivery, VehicleCargoList>;
+	CargoDelivery(VehicleCargoList *source, uint max_move, CargoPayment *payment) :
+			CargoRemoval<CargoDelivery, VehicleCargoList>(source, max_move), payment(payment) {}
+	bool operator()(CargoPacket *cp);
+};
+
+/** Action of truncating a vehicle cargo list. */
+class VehicleCargoTruncation : public CargoRemoval<VehicleCargoTruncation, VehicleCargoList> {
+protected:
+	inline void RemoveFromMeta(CargoPacket *cp, uint count) { this->source->RemoveFromMeta(cp, VehicleCargoList::A_KEEP, count); }
+public:
+	friend class CargoRemoval<VehicleCargoTruncation, VehicleCargoList>;
+	VehicleCargoTruncation(VehicleCargoList *source, uint max_move) :
+			CargoRemoval<VehicleCargoTruncation, VehicleCargoList>(source, max_move) {}
+};
+
+/**
+ * Abstract action for moving cargo from one list to another.
+ * @tparam Tsource CargoList subclass to remove cargo from.
+ * @tparam Tdest CargoList subclass to add cargo to.
+ */
 template<class Tsource, class Tdest>
 class CargoMovement {
 protected:
@@ -532,46 +609,10 @@ public:
 	uint MaxMove() { return this->max_move; }
 };
 
-/** Action of removing cargo from a vehicle. */
-class CargoRemoval {
-protected:
-	VehicleCargoList *source; ///< Source of the cargo.
-	uint max_move;            ///< Maximum amount of cargo to be removed with this action.
-
-	uint Preprocess(CargoPacket *cp, VehicleCargoList::Action action);
-public:
-	CargoRemoval(VehicleCargoList *source, uint max_move) :
-			source(source), max_move(max_move) {}
-	bool operator()(CargoPacket *cp);
-
-	/**
-	 * Returns how much more cargo can be removed with this action.
-	 * @return Amount of cargo this action can still remove.
-	 */
-	uint MaxMove() { return this->max_move; }
-};
-
-/** Action of final delivery of cargo. */
-class CargoDelivery {
-private:
-	VehicleCargoList *source; ///< Source of the cargo.
-	CargoPayment *payment;    ///< Payment object where payments will be registered.
-	uint max_move;            ///< Maximum amount of cargo to be delivered with this action.
-public:
-	CargoDelivery(VehicleCargoList *source, uint max_move, CargoPayment *payment) : source(source), payment(payment), max_move(max_move) {}
-	bool operator()(CargoPacket *cp);
-
-	/**
-	 * Returns how much more cargo can be delivered with this action.
-	 * @return Amount of cargo this action can still deliver.
-	 */
-	uint MaxMove() { return this->max_move; }
-};
-
 /** Action of transferring cargo from a vehicle to a station. */
 class CargoTransfer : public CargoMovement<VehicleCargoList, StationCargoList> {
 protected:
-	CargoPayment *payment; ///< Payment object for registering transfer credits.
+	CargoPayment *payment;  ///< Payment object for registering transfer credits.
 public:
 	CargoTransfer(VehicleCargoList *source, StationCargoList *destination, uint max_move, CargoPayment *payment) :
 			CargoMovement<VehicleCargoList, StationCargoList>(source, destination, max_move), payment(payment) {}

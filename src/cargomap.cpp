@@ -415,7 +415,7 @@ uint VehicleCargoList::Truncate(uint max_move)
 	assert(this->action_counts[A_KEEP] == this->count);
 	this->AssertCountConsistence();
 	max_move = max(this->count, max_move);
-	this->PopCargo(CargoRemoval(this, max_move));
+	this->PopCargo(VehicleCargoTruncation(this, max_move));
 	this->AssertCountConsistence();
 	return max_move;
 }
@@ -668,7 +668,7 @@ uint StationCargoList::Truncate(uint max_move)
 	uint moved = 0;
 	while (max_move > moved) {
 		for (Iterator it(this->packets.begin()); it != this->packets.end();) {
-			if (RandomRange(prev_count) < prev_count - max_move) {
+			if (prev_count > max_move && RandomRange(prev_count) < prev_count - max_move) {
 				++it;
 				continue;
 			}
@@ -702,6 +702,8 @@ void VehicleCargoList::InvalidateCache()
  *
  */
 
+
+
 /**
  * Decides if a packet needs to be split.
  * @param cp Packet to be either split or moved in one piece.
@@ -722,34 +724,28 @@ CargoPacket *CargoMovement<Tsource, Tdest>::Preprocess(CargoPacket *cp)
 
 /**
  * Determines the amount of cargo to be removed from a packet and removes that
- * from the metadata.
+ * from the metadata of the list.
  * @param cp Packet to be removed completely or partially.
- * @param action Action the packet is scheduled for.
  * @return Amount of cargo to be removed.
  */
-uint CargoRemoval::Preprocess(CargoPacket *cp, VehicleCargoList::Action action)
+template<class Tinst, class Tsource>
+uint CargoRemoval<Tinst, Tsource>::Preprocess(CargoPacket *cp)
 {
 	if (this->max_move >= cp->Count()) {
 		this->max_move -= cp->Count();
-		this->source->RemoveFromMeta(cp, action, cp->Count());
+		static_cast<Tinst *>(this)->RemoveFromMeta(cp, cp->Count());
 		return cp->Count();
 	} else {
 		uint ret = this->max_move;
-		this->source->RemoveFromMeta(cp, action, ret);
+		static_cast<Tinst *>(this)->RemoveFromMeta(cp, ret);
 		this->max_move = 0;
 		return ret;
 	}
 }
 
-/**
- * Removes some cargo.
- * @param cp Packet to be delivered.
- * @return True if the packet was completely delivered, false if only part of
- *         it was.
- */
-bool CargoRemoval::operator()(CargoPacket *cp)
+template<class Tsource, class Tinst>
+bool CargoRemoval<Tsource, Tinst>::PostProcess(CargoPacket *cp, uint remove)
 {
-	uint remove = this->Preprocess(cp, VehicleCargoList::A_KEEP);
 	if (remove == cp->Count()) {
 		delete cp;
 		return true;
@@ -767,15 +763,9 @@ bool CargoRemoval::operator()(CargoPacket *cp)
  */
 bool CargoDelivery::operator()(CargoPacket *cp)
 {
-	uint remove = this->Preprocess(cp, VehicleCargoList::A_DELIVER);
+	uint remove = this->Preprocess(cp);
 	this->payment->PayFinalDelivery(cp, remove);
-	if (remove == cp->Count()) {
-		delete cp;
-		return true;
-	} else {
-		cp->Reduce(remove);
-		return false;
-	}
+	return this->PostProcess(cp, remove);
 }
 
 /**

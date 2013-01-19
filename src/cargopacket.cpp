@@ -217,59 +217,6 @@ void CargoList<Tinst>::Append(CargoPacket *cp)
 }
 
 /**
- * Truncates the cargo in this list to the given amount. It leaves the
- * first count cargo entities and removes the rest.
- * @param max_move Maximum amount of entities to be in the list after the command.
- * @return Amount of cargo actually moved.
- */
-uint StationCargoList::Truncate(uint max_move)
-{
-	if (this->packets.empty()) return;
-	Iterator it(--(this->packets.end()));
-	Iterator begin(this->packets.begin());
-	while (action.MaxMove() > 0) {
-		CargoPacket *cp = *it;
-		if (action(cp)) {
-			if (it != begin) {
-				this->packets.erase(it--);
-			} else {
-				this->packets.erase(it);
-				break;
-			}
-		} else {
-			break;
-		}
-	}
-
-	max_move = min(this->count, max_move);
-	uint moved = 0;
-	for (Iterator it(packets.begin()); it != packets.end(); /* done during loop*/) {
-		CargoPacket *cp = *it;
-		uint local_count = cp->count;
-		if (local_count < max_move - moved) {
-			/* Nothing should remain, just remove the packets. */
-			it = this->packets.erase(it);
-			static_cast<Tinst *>(this)->RemoveFromCache(cp, cp->count);
-			moved += cp->count;
-			delete cp;
-			continue;
-		}
-
-		if (local_count > max_move - moved) {
-			uint diff = local_count - max_remaining;
-			this->count -= diff;
-			this->cargo_days_in_transit -= cp->days_in_transit * diff;
-			cp->count = max_remaining;
-			max_remaining = 0;
-		} else {
-			max_remaining -= local_count;
-		}
-		++it;
-	}
-	return moved;
-}
-
-/**
  * Tries to merge the second packet into the first and return if that was
  * successful.
  * @param icp Packet to be merged into.
@@ -327,6 +274,19 @@ void VehicleCargoList::Append(CargoPacket *cp, Action action)
 	}
 
 	NOT_REACHED();
+}
+
+/**
+ * Truncates the cargo in this list to the given amount. It leaves the
+ * first count cargo entities and removes the rest.
+ * @param max_move Maximum amount of entities to be in the list after the command.
+ * @return Amount of cargo actually moved.
+ */
+uint StationCargoList::Truncate(uint max_move)
+{
+	max_move = min(this->count, max_move);
+	this->PopCargo(StationCargoTruncation(this, max_move));
+	return max_move;
 }
 
 /**
@@ -426,7 +386,7 @@ uint VehicleCargoList::Truncate(uint max_move)
 	assert(this->action_counts[A_KEEP] == this->count);
 	this->AssertCountConsistence();
 	max_move = max(this->count, max_move);
-	this->PopCargo(CargoRemoval(this, max_move));
+	this->PopCargo(VehicleCargoTruncation(this, max_move));
 	this->AssertCountConsistence();
 	return max_move;
 }
@@ -460,8 +420,9 @@ void CargoList<Tinst>::ShiftCargo(Taction action)
  *               cargo packet will be removed from the list. Otherwise it
  *               will be kept and the loop will be aborted.
  */
+template <class Tinst>
 template <class Taction>
-void VehicleCargoList::PopCargo(Taction action)
+void CargoList<Tinst>::PopCargo(Taction action)
 {
 	if (this->packets.empty()) return;
 	Iterator it(--(this->packets.end()));
