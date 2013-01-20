@@ -64,6 +64,19 @@ public:
 
 	CargoPacket *Split(uint new_size);
 	void Merge(CargoPacket *cp);
+	void Reduce(uint count);
+
+	/**
+	 * Sets the tile where the packet was loaded last.
+	 * @param load_place Tile where the packet was loaded last.
+	 */
+	void SetLoadPlace(TileIndex load_place) { this->loaded_at_xy = load_place; }
+
+	/**
+	 * Adds some feeder share to the packet.
+	 * @param new_share Feeder share to be added.
+	 */
+	void AddFeederShare(Money new_share) { this->feeder_share += new_share; }
 
 	/**
 	 * Gets the number of 'items' in this packet.
@@ -170,8 +183,12 @@ public:
 	typedef std::list<CargoPacket *> List;
 	/** The iterator for our container. */
 	typedef List::iterator Iterator;
+	/** The reverse iterator for our container. */
+	typedef List::reverse_iterator ReverseIterator;
 	/** The const iterator for our container. */
 	typedef List::const_iterator ConstIterator;
+	/** The const reverse iterator for our container. */
+	typedef List::const_reverse_iterator ConstReverseIterator;
 
 	/** Kind of actions that could be done with packets on move. */
 	enum MoveToAction {
@@ -189,7 +206,9 @@ protected:
 
 	void AddToCache(const CargoPacket *cp);
 
-	void RemoveFromCache(const CargoPacket *cp);
+	void RemoveFromCache(const CargoPacket *cp, uint count);
+
+	static bool TryMerge(CargoPacket *cp, CargoPacket *icp);
 
 public:
 	/** Create the cargo list. */
@@ -265,7 +284,7 @@ protected:
 	Money feeder_share; ///< Cache for the feeder share.
 
 	void AddToCache(const CargoPacket *cp);
-	void RemoveFromCache(const CargoPacket *cp);
+	void RemoveFromCache(const CargoPacket *cp, uint count);
 
 public:
 	/** The super class ought to know what it's doing. */

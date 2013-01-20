@@ -79,7 +79,7 @@ CargoPacket::CargoPacket(uint16 count, byte days_in_transit, StationID source, T
 
 /**
  * Split this packet in two and return the split off part.
- * @param new_size Size of the remaining part.
+ * @param new_size Size of the split part.
  * @return Split off part, or NULL if no packet could be allocated!
  */
 inline CargoPacket *CargoPacket::Split(uint new_size)
@@ -102,6 +102,16 @@ inline void CargoPacket::Merge(CargoPacket *cp)
 	this->count += cp->count;
 	this->feeder_share += cp->feeder_share;
 	delete cp;
+}
+
+/**
+ * Reduce the packet by the given amount and remove the feeder share.
+ * @param count Amount to be removed.
+ */
+inline void CargoPacket::Reduce(uint count)
+{
+	this->feeder_share -= this->feeder_share * count / this->count;
+	this->count -= count;
 }
 
 /**
@@ -157,15 +167,17 @@ void CargoList<Tinst>::OnCleanPool()
 }
 
 /**
- * Update the cached values to reflect the removal of this packet.
+ * Update the cached values to reflect the removal of this packet or part of it.
  * Decreases count and days_in_transit.
  * @param cp Packet to be removed from cache.
+ * @param count Amount of cargo from the given packet to be removed.
  */
 template <class Tinst>
-void CargoList<Tinst>::RemoveFromCache(const CargoPacket *cp)
+void CargoList<Tinst>::RemoveFromCache(const CargoPacket *cp, uint count)
 {
-	this->count                 -= cp->count;
-	this->cargo_days_in_transit -= cp->days_in_transit * cp->count;
+	assert(count <= cp->count);
+	this->count                 -= count;
+	this->cargo_days_in_transit -= cp->days_in_transit * count;
 }
 
 /**
@@ -195,11 +207,7 @@ void CargoList<Tinst>::Append(CargoPacket *cp)
 	static_cast<Tinst *>(this)->AddToCache(cp);
 
 	for (List::reverse_iterator it(this->packets.rbegin()); it != this->packets.rend(); it++) {
-		CargoPacket *icp = *it;
-		if (Tinst::AreMergable(icp, cp) && icp->count + cp->count <= CargoPacket::MAX_COUNT) {
-			icp->Merge(cp);
-			return;
-		}
+		if (CargoList<Tinst>::TryMerge(*it, cp)) return;
 	}
 
 	/* The packet could not be merged with another one */
@@ -222,7 +230,7 @@ uint CargoList<Tinst>::Truncate(uint max_move)
 		if (max_remaining == 0) {
 			/* Nothing should remain, just remove the packets. */
 			it = this->packets.erase(it);
-			static_cast<Tinst *>(this)->RemoveFromCache(cp);
+			static_cast<Tinst *>(this)->RemoveFromCache(cp, cp->count);
 			delete cp;
 			continue;
 		}
@@ -230,9 +238,8 @@ uint CargoList<Tinst>::Truncate(uint max_move)
 		uint local_count = cp->count;
 		if (local_count > max_remaining) {
 			uint diff = local_count - max_remaining;
-			this->count -= diff;
-			this->cargo_days_in_transit -= cp->days_in_transit * diff;
-			cp->count = max_remaining;
+			static_cast<Tinst *>(this)->RemoveFromCache(cp, diff);
+			cp->Reduce(diff);
 			max_remaining = 0;
 		} else {
 			max_remaining -= local_count;
@@ -283,7 +290,7 @@ bool CargoList<Tinst>::MoveTo(Tother_inst *dest, uint max_move, MoveToAction mta
 			/* Can move the complete packet */
 			max_move -= cp->count;
 			it = this->packets.erase(it);
-			static_cast<Tinst *>(this)->RemoveFromCache(cp);
+			static_cast<Tinst *>(this)->RemoveFromCache(cp, cp->count);
 			switch (mta) {
 				case MTA_FINAL_DELIVERY:
 					payment->PayFinalDelivery(cp, cp->count);
@@ -311,14 +318,8 @@ bool CargoList<Tinst>::MoveTo(Tother_inst *dest, uint max_move, MoveToAction mta
 			payment->PayFinalDelivery(cp, max_move);
 
 			/* Remove the delivered data from the cache */
-			uint left = cp->count - max_move;
-			cp->count = max_move;
-			static_cast<Tinst *>(this)->RemoveFromCache(cp);
-
-			/* Final delivery payment pays the feeder share, so we have to
-			 * reset that so it is not 'shown' twice for partial unloads. */
-			cp->feeder_share = 0;
-			cp->count = left;
+			static_cast<Tinst *>(this)->RemoveFromCache(cp, max_move);
+			cp->Reduce(max_move);
 		} else {
 			/* But... the rest needs package splitting. */
 			CargoPacket *cp_new = cp->Split(max_move);
@@ -326,7 +327,7 @@ bool CargoList<Tinst>::MoveTo(Tother_inst *dest, uint max_move, MoveToAction mta
 			/* We could not allocate a CargoPacket? Is the map that full? */
 			if (cp_new == NULL) return false;
 
-			static_cast<Tinst *>(this)->RemoveFromCache(cp_new); // this reflects the changes in cp.
+			static_cast<Tinst *>(this)->RemoveFromCache(cp_new, max_move); // this reflects the changes in cp.
 
 			if (mta == MTA_TRANSFER) {
 				/* Add the feeder share before inserting in dest. */
@@ -357,14 +358,40 @@ void CargoList<Tinst>::InvalidateCache()
 }
 
 /**
- * Update the cached values to reflect the removal of this packet.
+ * Tries to merge the second packet into the first and return if that was
+ * successful.
+ * @param icp Packet to be merged into.
+ * @param cp Packet to be eliminated.
+ * @return If the packets could be merged.
+ */
+template <class Tinst>
+/* static */ bool CargoList<Tinst>::TryMerge(CargoPacket *icp, CargoPacket *cp)
+{
+	if (Tinst::AreMergable(icp, cp) &&
+				icp->count + cp->count <= CargoPacket::MAX_COUNT) {
+		icp->Merge(cp);
+		return true;
+	} else {
+		return false;
+	}
+}
+
+/*
+ *
+ * Vehicle cargo list implementation.
+ *
+ */
+
+/**
+ * Update the cached values to reflect the removal of this packet or part of it.
  * Decreases count, feeder share and days_in_transit.
  * @param cp Packet to be removed from cache.
+ * @param count Amount of cargo from the given packet to be removed.
  */
-void VehicleCargoList::RemoveFromCache(const CargoPacket *cp)
+void VehicleCargoList::RemoveFromCache(const CargoPacket *cp, uint count)
 {
 	this->feeder_share -= cp->feeder_share;
-	this->Parent::RemoveFromCache(cp);
+	this->Parent::RemoveFromCache(cp, count);
 }
 
 /**
