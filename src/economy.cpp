@@ -1291,7 +1291,7 @@ static void ReserveConsist(Station *st, Vehicle *u, CargoArray *consist_capleft)
 
 			/* Nothing to do if the vehicle is full */
 			if (cap > 0) {
-				cap -= st->goods[v->cargo_type].cargo.Reserve(&v->cargo, cap, st->xy);
+				cap -= st->goods[v->cargo_type].cargo.Reserve(cap, &v->cargo, st->xy);
 			}
 
 			if (consist_capleft != NULL) {
@@ -1397,7 +1397,7 @@ static void LoadUnloadVehicle(Vehicle *front)
 
 			/* Mark the station dirty if we transfer, but not if we only deliver. */
 			dirty_station = v->cargo.ActionCount(VehicleCargoList::A_TRANSFER) > 0;
-			amount_unloaded = v->cargo.Unload(&ge->cargo, amount_unloaded, payment);
+			amount_unloaded = v->cargo.Unload(amount_unloaded, &ge->cargo, payment);
 			remaining = v->cargo.UnloadCount() > 0;
 			if (amount_unloaded > 0) {
 				dirty_vehicle = true;
@@ -1476,7 +1476,7 @@ static void LoadUnloadVehicle(Vehicle *front)
 			/* Add new capacity to consist capacity and reserve cargo */
 			w = v_start;
 			do {
-				st->goods[w->cargo_type].cargo.Reserve(&w->cargo, w->cargo_cap, st->xy);
+				st->goods[w->cargo_type].cargo.Reserve(w->cargo_cap, &w->cargo, st->xy);
 				consist_capleft[w->cargo_type] += w->cargo_cap - w->cargo.Count();
 				w = w->HasArticulatedPart() ? w->GetNextArticulatedPart() : NULL;
 			} while (w != NULL);
@@ -1515,7 +1515,7 @@ static void LoadUnloadVehicle(Vehicle *front)
 			if (_settings_game.order.gradual_loading) cap_left = min(cap_left, load_amount);
 			if (v->cargo.OnboardCount() == 0) TriggerVehicle(v, VEHICLE_TRIGGER_NEW_CARGO);
 
-			uint loaded = ge->cargo.Load(&v->cargo, cap_left, st->xy);
+			uint loaded = ge->cargo.Load(cap_left, &v->cargo, st->xy);
 
 			/* Store whether the maximum possible load amount was loaded or not.*/
 			if (loaded == (uint)cap_left) {

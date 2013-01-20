@@ -72,6 +72,7 @@ public:
 	 * @param load_place Tile where the packet was loaded last.
 	 */
 	void SetLoadPlace(TileIndex load_place) { this->loaded_at_xy = load_place; }
+
 	/**
 	 * Adds some feeder share to the packet.
 	 * @param new_share Feeder share to be added.
@@ -187,6 +188,8 @@ public:
 	typedef List::reverse_iterator ReverseIterator;
 	/** The const iterator for our container. */
 	typedef List::const_iterator ConstIterator;
+	/** The const reverse iterator for our container. */
+	typedef List::const_reverse_iterator ConstReverseIterator;
 
 protected:
 	uint count;                 ///< Cache for the number of cargo entities.
@@ -287,11 +290,8 @@ protected:
 	/** The (direct) parent of this class. */
 	typedef CargoList<VehicleCargoList> Parent;
 
-	Money feeder_share;                     ///< Cache for the feeder share.
+	Money feeder_share;             ///< Cache for the feeder share.
 	uint action_counts[NUM_ACTION]; ///< Counts of cargo to be transfered, delivered, kept and loaded.
-
-	void AddToCache(const CargoPacket *cp);
-	void RemoveFromCache(const CargoPacket *cp, uint count);
 
 	/**
 	 * Assert that the designation counts add up.
@@ -304,47 +304,24 @@ protected:
 				this->action_counts[A_LOAD] == this->count);
 	}
 
+	void AddToCache(const CargoPacket *cp);
+	void RemoveFromCache(const CargoPacket *cp, uint count);
+
+	void RemoveFromMeta(const CargoPacket *cp, Action action, uint count);
+	void AddToMeta(const CargoPacket *cp, Action action);
+
 public:
 	/** The super class ought to know what it's doing. */
 	friend class CargoList<VehicleCargoList>;
 	/** The vehicles have a cargo list (and we want that saved). */
 	friend const struct SaveLoad *GetVehicleDescription(VehicleType vt);
 
+	/* Various actions have to interact with internals of the list. */
 	friend class CargoShift;
 	friend class CargoDelivery;
 	friend class CargoReturn;
 	friend class CargoTransfer;
 	friend class VehicleCargoTruncation;
-
-	void Append(CargoPacket *cp, Action action = A_KEEP);
-
-	void RemoveFromMeta(const CargoPacket *cp, Action action, uint count);
-	void AddToMeta(const CargoPacket *cp, Action action);
-
-	/**
-	 * Moves some cargo from one designation to another. You can only move
-	 * between adjacent designation. E.g. you can keep cargo that was
-	 * previously reserved (MTA_LOAD) or you can mark cargo to be transferred
-	 * that was previously marked as to be delivered, but you can't reserve
-	 * cargo that's marked as to be delivered.
-	 */
-	inline void Reassign(uint count, Action from, Action to)
-	{
-		assert(Delta((int)from, (int)to) == 1);
-		this->action_counts[from] -= count;
-		this->action_counts[to] += count;
-	}
-
-	/**
-	 * Marks all cargo in the vehicle as to be kept. This is mostly useful for
-	 * loading old savegames. When loading is aborted the reserved cargo has
-	 * to be returned first.
-	 */
-	inline void KeepAll()
-	{
-		this->action_counts[A_DELIVER] = this->action_counts[A_TRANSFER] = this->action_counts[A_LOAD] = 0;
-		this->action_counts[A_KEEP] = this->count;
-	}
 
 	/**
 	 * Returns total sum of the feeder share for all packets.
@@ -393,19 +370,34 @@ public:
 		return this->action_counts[A_KEEP] + this->action_counts[A_LOAD];
 	}
 
-	uint Return(StationCargoList *dest, uint count = UINT_MAX);
-
-	uint Unload(StationCargoList *dest, uint count, CargoPayment *payment);
-
-	uint Shift(VehicleCargoList *dest, uint count);
-
-	uint Truncate(uint max_move = UINT_MAX);
+	void Append(CargoPacket *cp, Action action = A_KEEP);
 
 	void AgeCargo();
 
+	void InvalidateCache();
+
 	bool Stage(bool accepted, StationID current_station, uint8 order_flags);
 
-	void InvalidateCache();
+	/**
+	 * Marks all cargo in the vehicle as to be kept. This is mostly useful for
+	 * loading old savegames. When loading is aborted the reserved cargo has
+	 * to be returned first.
+	 */
+	inline void KeepAll()
+	{
+		this->action_counts[A_DELIVER] = this->action_counts[A_TRANSFER] = this->action_counts[A_LOAD] = 0;
+		this->action_counts[A_KEEP] = this->count;
+	}
+
+	/* Methods for moving cargo around. First parameter is always maximum
+	 * amount of cargo to be moved. Second parameter is destination (if
+´	 * applicable), return value is amount of cargo actually moved. */
+
+	uint Reassign(uint max_move, Action from, Action to);
+	uint Return(uint max_move, StationCargoList *dest);
+	uint Unload(uint max_move, StationCargoList *dest, CargoPayment *payment);
+	uint Shift(uint max_move, VehicleCargoList *dest);
+	uint Truncate(uint max_move = UINT_MAX);
 
 	/**
 	 * Are two the two CargoPackets mergeable in the context of
@@ -437,26 +429,12 @@ public:
 	/** The stations, via GoodsEntry, have a CargoList. */
 	friend const struct SaveLoad *GetGoodsDesc();
 
+	/* Various actions have to interact with internals of the list. */
 	friend class CargoReroute;
 	friend class CargoLoad;
 	friend class CargoReservation;
 	friend class CargoReturn;
 	friend class StationCargoTruncation;
-
-	/**
-	 * Are two the two CargoPackets mergeable in the context of
-	 * a list of CargoPackets for a station?
-	 * @param cp1 First CargoPacket.
-	 * @param cp2 Second CargoPacket.
-	 * @return True if they are mergeable.
-	 */
-	static bool AreMergable(const CargoPacket *cp1, const CargoPacket *cp2)
-	{
-		return cp1->source_xy    == cp2->source_xy &&
-				cp1->days_in_transit == cp2->days_in_transit &&
-				cp1->source_type     == cp2->source_type &&
-				cp1->source_id       == cp2->source_id;
-	}
 
 	/**
 	 * Returns sum of cargo reserved for loading onto vehicles.
@@ -477,53 +455,28 @@ public:
 		return this->count + this->reserved_count;
 	}
 
-	/**
-	 * Returns a previously reserved packet to the station it came from.
-	 * @param cp Packet being returned.
-	 */
-	inline void Return(CargoPacket *cp)
-	{
-		assert(cp->count <= this->reserved_count);
-		this->reserved_count -= cp->count;
-		this->Append(cp);
-	}
+	/* Methods for moving cargo around. First parameter is always maximum
+	 * amount of cargo to be moved. Second parameter is destination (if
+	 * applicable), return value is amount of cargo actually moved. */
 
-	/**
-	 * Loads some reserved cargo onto the vehicle which had reserved it.
-	 * @param move Amount of cargo being loaded.
-	 */
-	inline void LoadReserved(uint move)
-	{
-		assert(move <= this->reserved_count);
-		this->reserved_count -= move;
-	}
-
-	/**
-	 * Reserves some cargo for loading. It's assumed that the packet has
-	 * already been removed from the list and only the metadata has to be
-	 * updated.
-	 * @param cp Packet being reserved.
-	 */
-	inline void Reserve(CargoPacket *cp)
-	{
-		this->reserved_count += cp->count;
-		this->RemoveFromCache(cp, cp->count);
-	}
-
-	/**
-	 * Load a packet onto a vehicle without reserving it before. It's assumed
-	 * that the packet has already been removed from the list and only the
-	 * cache has to be updated.
-	 * @param cp Packet being loaded.
-	 */
-	inline void Load(CargoPacket *cp)
-	{
-		this->RemoveFromCache(cp, cp->count);
-	}
-
-	uint Reserve(VehicleCargoList *dest, uint count, TileIndex load_place);
-	uint Load(VehicleCargoList *dest, uint count, TileIndex load_place);
+	uint Reserve(uint max_move, VehicleCargoList *dest, TileIndex load_place);
+	uint Load(uint max_move, VehicleCargoList *dest, TileIndex load_place);
 	uint Truncate(uint max_move = UINT_MAX);
+
+	/**
+	 * Are two the two CargoPackets mergeable in the context of
+	 * a list of CargoPackets for a Vehicle?
+	 * @param cp1 First CargoPacket.
+	 * @param cp2 Second CargoPacket.
+	 * @return True if they are mergeable.
+	 */
+	static bool AreMergable(const CargoPacket *cp1, const CargoPacket *cp2)
+	{
+		return cp1->source_xy    == cp2->source_xy &&
+				cp1->days_in_transit == cp2->days_in_transit &&
+				cp1->source_type     == cp2->source_type &&
+				cp1->source_id       == cp2->source_id;
+	}
 };
 
 /**
