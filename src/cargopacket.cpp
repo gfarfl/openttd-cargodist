@@ -115,7 +115,7 @@ void CargoPacket::Merge(CargoPacket *cp)
 void CargoPacket::Reduce(uint count)
 {
 	assert(count < this->count);
-	this->feeder_share -= this->feeder_share * count / this->count;
+	this->feeder_share -= this->FeederShare(count);
 	this->count -= count;
 }
 
@@ -334,7 +334,7 @@ void VehicleCargoList::PopCargo(Taction action)
  */
 void VehicleCargoList::RemoveFromCache(const CargoPacket *cp, uint count)
 {
-	this->feeder_share -= cp->feeder_share;
+	this->feeder_share -= cp->FeederShare(count);
 	this->Parent::RemoveFromCache(cp, count);
 }
 

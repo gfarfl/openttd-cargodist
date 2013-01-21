@@ -106,6 +106,17 @@ public:
 	}
 
 	/**
+	 * Gets part of the amount of money already paid to earlier vehicles in
+	 * the feeder chain.
+	 * @param part Amount of cargo to get the share for.
+	 * @return Feeder share for the given amount of cargo.
+	 */
+	inline Money FeederShare(uint part) const
+	{
+		return this->feeder_share * part / this->count;
+	}
+
+	/**
 	 * Gets the number of days this cargo has been in transit.
 	 * This number isn't really in days, but in 2.5 days (CARGO_AGING_TICKS = 185 ticks) and
 	 * it is capped at 255.
