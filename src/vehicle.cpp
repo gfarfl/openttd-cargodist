@@ -1987,7 +1987,8 @@ void Vehicle::BeginLoading()
 }
 
 /**
- * Return all reserved cargo packets to the station.
+ * Return all reserved cargo packets to the station and reset all packets
+ * staged for transfer.
  * @param st the station where the reserved packets should go.
  */
 void Vehicle::CancelReservation(StationID next, Station *st)
@@ -1997,6 +1998,8 @@ void Vehicle::CancelReservation(StationID next, Station *st)
 		if (cargo.ActionCount(VehicleCargoList::MTA_LOAD) > 0) {
 			DEBUG(misc, 1, "cancelling cargo reservation");
 			cargo.Return(UINT_MAX, &st->goods[v->cargo_type].cargo, next);
+			cargo.SetTransferLoadPlace(st->xy);
+			cargo.KeepAll();
 		}
 	}
 }

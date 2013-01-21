@@ -392,6 +392,23 @@ void VehicleCargoList::AgeCargo()
 }
 
 /**
+ * Sets loaded_at_xy to the current station for all cargo to be transfered.
+ * This is done when stopping or skipping while the vehicle is unloading. In
+ * that case the vehicle will get part of its transfer credits early and it may
+ * get more transfer credits than it's entitled to.
+ * @param xy New loaded_at_xy for the cargo.
+ */
+void VehicleCargoList::SetTransferLoadPlace(TileIndex xy)
+{
+	uint sum = 0;
+	for (Iterator it = this->packets.begin(); sum < this->action_counts[MTA_TRANSFER]; ++it) {
+		CargoPacket *cp = *it;
+		cp->loaded_at_xy = xy;
+		sum += cp->count;
+	}
+}
+
+/**
  * Stages cargo for unloading. The cargo is sorted so that packets to be
  * transferred, delivered or kept are in consecutive chunks in the list. At the
  * same time the designation_counts are updated to reflect the size of those

@@ -398,6 +398,8 @@ public:
 
 	void InvalidateCache();
 
+	void SetTransferLoadPlace(TileIndex xy);
+
 	bool Stage(bool accepted, StationID current_station, StationID next_station, uint8 order_flags, const GoodsEntry *ge, CargoPayment *payment);
 
 	/**
