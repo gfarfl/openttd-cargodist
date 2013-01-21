@@ -650,8 +650,8 @@ uint StationCargoList::ShiftCargo(Taction action, StationID next, bool include_i
 }
 
 /**
- * Truncate where each destination loses roughly the same percentage of its cargo.
- * This is done by randomizing the selection of packets to be removed.
+ * Truncates where each destination loses roughly the same percentage of its
+ * cargo. This is done by randomizing the selection of packets to be removed.
  * @param max_move Maximum amount of cargo to remove.
  * @return Amount of cargo actually moved.
  */
@@ -682,6 +682,7 @@ uint StationCargoList::Truncate(uint max_move)
 	}
 	return moved;
 }
+
 /**
  * Reserves cargo for loading onto the vehicle.
  * @param dest VehicleCargoList to reserve for.
@@ -717,7 +718,7 @@ uint StationCargoList::Load(uint max_move, VehicleCargoList *dest, TileIndex loa
 }
 
 /**
- * Route packets with station "to" as next hop to a different place.
+ * Routes packets with station "avoid" as next hop to a different place.
  * @param max_move Maximum amount of cargo to move.
  * @param dest List to append the cargo to.
  * @param avoid Station to exclude from routing.
